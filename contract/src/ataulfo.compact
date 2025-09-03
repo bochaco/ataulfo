@@ -1,0 +1,351 @@
+pragma language_version >= 0.16 && <= 0.17;
+
+import CompactStandardLibrary;
+
+import NonFungibleToken prefix NonFungibleToken_;
+
+// Contract's own treasury of native tokens
+export ledger treasury: QualifiedCoinInfo;
+
+// Fee charge for each deposit/withdrawal/fulfillment operation to use for transfer fees.
+export sealed ledger opsFee: Uint<128>;
+
+// Creator and owner of the contract who can mint assets and withdraw collected operations fees.
+export sealed ledger contractOwner: Bytes<32>;
+
+// Buy or Sell offer
+export struct Offer {
+  publisher: Either<ZswapCoinPublicKey, ContractAddress>; // Publisher and current owner of the offered asset
+  assetId: Uint<128>; // TokenId of the asset offered
+  price: Uint<128>; // Price in atto for each unit of the offered asset/s
+}
+
+// Accounts (hidden owner) and their deposited native tokens balances.
+export ledger accounts: Map<Bytes<32>, Uint<128>>;
+
+// The total balance of all accounts.
+export ledger accountsTotalBalance: Uint<128>;
+
+// Map of all current sell offers
+export ledger offers: Map<Bytes<32>, Offer>;
+
+// Witness for the local secret key used to managed deposited funds
+witness localSecretKey(): Bytes<32>;
+
+constructor(name: Opaque<"string">, symbol: Opaque<"string">, fee: Uint<128>) {
+  NonFungibleToken_initialize(name, symbol);
+  opsFee = disclose(fee);
+  contractOwner = disclose(genHiddenOwner(localSecretKey()));
+}
+
+/**
+  * @description Mint a new asset with given Id and owned by the caller.
+  *
+  * Requirements:
+  *
+  * - The contract is initialized.
+  * - The caller is the contract owner.
+  * - The assetId is not already minted.
+  *
+  * @return {[]} - Empty tuple.
+  */
+export circuit mint(assetId: Uint<128>): [] {
+  assert(contractOwner == genHiddenOwner(localSecretKey()), "Only the contract owner can mint new assets");
+  const txSender = getTxSender();
+  NonFungibleToken__mint(txSender, assetId);
+
+  return [];
+}
+
+/**
+  * @description Withdraw collected fees.
+  *
+  * Requirements:
+  *
+  * - The contract is initialized.
+  * - The caller is the contract owner.
+  * - There are collected fees to withdraw while backing accounts deposits.
+  *
+  * @return {Uint<128>} - Balance withdrawn.
+  */
+export circuit withdrawCollectedFees(): Uint<128> {
+  assert(contractOwner == genHiddenOwner(localSecretKey()), "Only the contract owner can withdraw collected fees");
+
+  // keep just enough funds to back accounts deposits
+  const collectedFeesBalance = treasury.value - accountsTotalBalance;
+  assert(collectedFeesBalance > 0, "No collected fees available for withdrawal");
+
+  const sendResult = send(treasury, getTxSender(), disclose(collectedFeesBalance));
+  assert(sendResult.sent.value == collectedFeesBalance, "Failed to send withdrawal of collected fees");
+  if (sendResult.change.is_some) {
+     const me = myAddr();
+     treasury.writeCoin(sendResult.change.value, me);
+  } else {
+     treasury.resetToDefault();
+  }
+
+  return disclose(collectedFeesBalance);
+}
+
+/**
+  * @description Publish a new offer for the specified `assetId` and given `price`.
+  *
+  * Requirements:
+  *
+  * - The contract is initialized.
+  * - The price is greater than zero.
+  * - The caller is the owner or operator of the asset to be published.
+  *
+  * @param {Uint<128>} assetId - Id of the asset the offer is for
+  * @param {Uint<128>} price - Price of the asset in this offer
+  * @return {Bytes<32>} - The ID of the created offer.
+  */
+export circuit createOffer(assetId: Uint<128>, price: Uint<128>): Bytes<32> {
+  assert(price > 0, "Price must be greater than zero");
+
+  const publisher = getTxSender();
+  const owner = NonFungibleToken_ownerOf(assetId);
+  assert((publisher == owner || NonFungibleToken_isApprovedForAll(owner, publisher)), "Offer publisher must be the owner or operator of the asset");
+
+  // WORKAROUND: transfers to contract are not yet supported so tokens will be locked in them.
+  //NonFungibleToken_transferFrom(publisher, me, assetId);
+  // We temporarily just approve the contract for transfer
+  const me = myAddr();
+  NonFungibleToken_approve(me, assetId);
+  assert(NonFungibleToken_getApproved(assetId) == me, "Asset must be approved for the contract to be transfered");
+  // END WORKAROUND
+
+  const offer = Offer { publisher: publisher, assetId: assetId, price: price };
+
+  // insert offer in the offers map
+  if (publisher.is_left) {
+     const offerId = genOfferId(publisher.left.bytes, assetId, price);
+     offers.insert(disclose(offerId), disclose(offer));
+     return offerId;
+  } else {
+     const offerId = genOfferId(publisher.right.bytes, assetId, price);
+     offers.insert(disclose(offerId), disclose(offer));
+     return offerId;
+  }
+}
+
+/**
+  * @description Cancel the offer with the specified `offerId`.
+  *
+  * Requirements:
+  *
+  * - The contract is initialized.
+  * - The offer exists.
+  * - The caller is the publisher or the owner of the offer.
+  *
+  * @param {Bytes<32>} offerId - Id of the offer to cancel
+  * @return {Offer} - The offer just cancelled.
+  */
+export circuit cancelOffer(offerId: Bytes<32>): Offer {
+  assert(offers.member(disclose(offerId)), "Offer does not exist");
+  const offer = offers.lookup(disclose(offerId));
+  const txSender = getTxSender();
+  const owner = NonFungibleToken_ownerOf(offer.assetId);
+  assert((offer.publisher == txSender || owner == txSender), "Offer can be cancelled by the publisher or owner");
+
+  // TODO transfer the asset back to the publisher,
+  // for now we are only approving the contract for transfer so no need to transfer back
+  //const assetId = offer.assetId;
+  //NonFungibleToken_transferFrom(offer.publisher, txSender, offer.assetId);
+  // END TODO
+
+  // remove the offer
+  offers.remove(disclose(offerId));
+
+  return offer;
+}
+
+/**
+  * @description Deposit funds into the contract which can be used to make the payment when fulfilling an offer.
+  *
+  * Requirements:
+  *
+  * - The contract is initialized.
+  * - The funds are in native token.
+  * - The amount is greater than the contract defined operations fee.
+  *
+  * @param {CoinInfo} coinInfo - Information about the funds being deposited
+  * @return {[Uint<128>, Uint<128>]} - Net amount deposited, i.e. after fees, and updated balance.
+  */
+export circuit depositFunds(coinInfo: CoinInfo): [Uint<128>, Uint<128>] {
+  assert(coinInfo.color == nativeToken(), "Only native tokens can be deposited");
+  assert(coinInfo.value > opsFee, "Deposit amount must be greater than the operations fee");
+
+  receive(disclose(coinInfo));
+  const me = myAddr();
+  // TODO: improve this check with initialised flags
+  if (treasury.mt_index == 0) {
+     treasury.writeCoin(disclose(coinInfo), me);
+  } else {
+     const mergedCoin = mergeCoinImmediate(treasury, disclose(coinInfo));
+     treasury.writeCoin(disclose(mergedCoin), me);
+  }
+  // we need to calculate the deposited value to account for contract fee
+  const netAmount = (coinInfo.value - opsFee) as Uint<128>;
+  accountsTotalBalance = (accountsTotalBalance + disclose(netAmount)) as Uint<128>;
+
+  const balanceOwner = genHiddenOwner(localSecretKey());
+  if (accounts.member(disclose(balanceOwner))) {
+     const balance = accounts.lookup(disclose(balanceOwner));
+     const updatedBalance = (balance + netAmount) as Uint<128>;
+     accounts.insert(disclose(balanceOwner), disclose(updatedBalance));
+     return [netAmount, updatedBalance];
+  } else {
+     accounts.insert(disclose(balanceOwner), disclose(netAmount));
+     return [netAmount, netAmount];
+  }
+}
+
+/**
+  * @description Withdraw deposited funds from the contract.
+  *
+  * Requirements:
+  *
+  * - The contract is initialized.
+  * - The amount is greater than the contract defined operations fee.
+  * - The caller has deposited balance and the amount is less than or equal to the deposited balance.
+  *
+  * @return {Uint<128>} - Amount to withdraw.
+  * @return {Uint<128>} - Updated balance.
+  */
+export circuit withdrawFunds(amount: Uint<128>): Uint<128> {
+  assert(amount > opsFee, "Withdraw amount must be greater than the operations fee");
+  const balanceOwner = genHiddenOwner(localSecretKey());
+  assert(accounts.member(disclose(balanceOwner)), "No balance deposited to withdraw");
+  const balance = accounts.lookup(disclose(balanceOwner));
+  const grossAmount = (amount + opsFee) as Uint<128>;
+  assert(balance >= grossAmount, "Insufficient balance to withdraw the requested amount and pay the operation fee");
+
+  // send back the funds to the sender
+  const sendResult = send(treasury, getTxSender(), disclose(amount));
+  assert(sendResult.sent.value == amount, "Failed to send withdrawal payment");
+  if (sendResult.change.is_some) {
+     const me = myAddr();
+     treasury.writeCoin(sendResult.change.value, me);
+  } else {
+     treasury.resetToDefault();
+  }
+
+  // remove or update account of the caller
+  const updatedBalance = (balance - grossAmount) as Uint<128>;
+  if (disclose(updatedBalance) > 0) {
+     accounts.insert(disclose(balanceOwner), disclose(updatedBalance));
+  } else {
+     accounts.remove(disclose(balanceOwner));
+  }
+  accountsTotalBalance = (accountsTotalBalance - disclose(grossAmount)) as Uint<128>;
+
+  return updatedBalance;
+}
+
+/**
+  * @description Query balance from the contract.
+  *
+  * Requirements:
+  *
+  * - The contract is initialized.
+  *
+  * @return {Uint<128>} - Current balance.
+  */
+export circuit balance(): Uint<128> {
+  const balanceOwner = genHiddenOwner(localSecretKey());
+  if (accounts.member(disclose(balanceOwner))) {
+     return accounts.lookup(disclose(balanceOwner));
+  } else {
+     return 0;
+  }
+}
+
+/**
+  * @description Fulfill an offer by transferring the asset to the caller and automatically making the payment to the publisher.
+  *
+  * Requirements:
+  *
+  * - The contract is initialized.
+  * - The offer exists.
+  * - The caller is not the publisher.
+  * - The caller has sufficient deposited balance to cover the price of the offer and operation fee.
+  *
+  * @param {Bytes<32>} offerId - Id of the offer to fulfill.
+  * @return {Offer} - The offer just fulfilled.
+  */
+export circuit fulfillOffer(offerId: Bytes<32>): Offer {
+  assert(offers.member(disclose(offerId)), "Offer does not exist");
+  const offer = offers.lookup(disclose(offerId));
+  const me = myAddr();
+  // WORKAROUND: Check if the asset is still approved for transfer
+  const owner = NonFungibleToken_ownerOf(offer.assetId);
+  const isAssetStillApproved =
+                (NonFungibleToken_getApproved(offer.assetId) == me ||
+                 NonFungibleToken_isApprovedForAll(owner, me));
+  if (!isAssetStillApproved) {
+    offers.remove(disclose(offerId));
+    assert(isAssetStillApproved, "The offer has been revoked by the owner");
+  }
+  // END WORKAROUND
+  const buyer = getTxSender();
+  assert(offer.publisher != buyer, "Offer cannot be fulfilled by the publisher");
+  const balanceOwner = genHiddenOwner(localSecretKey());
+  assert(accounts.member(disclose(balanceOwner)), "No balance deposited to fulfill the offer and operation fee");
+  const buyerBalance = accounts.lookup(disclose(balanceOwner));
+  const grossPrice = offer.price + opsFee;
+  assert(buyerBalance >= grossPrice, "Insufficient balance to fulfill the offer and operation fee");
+
+  // transfer the asset to the buyer
+  NonFungibleToken_transferFrom(offer.publisher, buyer, offer.assetId);
+
+  // send the tDUST payment to the publisher
+  const sendResult = send(treasury, offer.publisher, disclose(offer.price));
+  assert(sendResult.sent.value == offer.price, "Failed to send payment");
+  if (sendResult.change.is_some) {
+     treasury.writeCoin(sendResult.change.value, me);
+  } else {
+     treasury.resetToDefault();
+  }
+
+  // reduce balance of the buyer
+  const buyerUpdatedBalance = (buyerBalance - grossPrice) as Uint<128>;
+  if (buyerUpdatedBalance > 0) {
+     accounts.insert(disclose(balanceOwner), buyerUpdatedBalance);
+  } else {
+     accounts.remove(disclose(balanceOwner));
+  }
+  accountsTotalBalance = (accountsTotalBalance - disclose(grossPrice)) as Uint<128>;
+
+  // remove the offer
+  offers.remove(disclose(offerId));
+
+  return offer;
+}
+
+// Helper to get the transaction sender address.
+circuit getTxSender(): Either<ZswapCoinPublicKey, ContractAddress> {
+  return left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
+}
+
+// Helper to get the contract's address.
+circuit myAddr(): Either<ZswapCoinPublicKey, ContractAddress> {
+  return right<ZswapCoinPublicKey, ContractAddress>(kernel.self());
+}
+
+// Helper to generate a unique offer ID based on the publisher, asset ID, and price.
+// We include the publisher in the ID to support different operators offering the same asset.
+circuit genOfferId(publisher: Bytes<32>, assetId: Uint<128>, price: Uint<128>): Bytes<32> {
+  return persistentHash<Vector<4, Bytes<32>>>(
+           [pad(32, "ataulfo_offer_id:"),
+            publisher,
+            assetId as Field as Bytes<32>,
+            price as Field as Bytes<32>])
+         as
+         Bytes<32>;
+}
+
+// Helper to generate an owner ID based on the owner's secret key.
+export circuit genHiddenOwner(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "ataulfo_hidden_owner:"), sk]) as Bytes<32>;
+}
