@@ -23,7 +23,7 @@ import contractModule, { Offer } from '../../contract/src/managed/ataulfo/contra
 const { Contract, ledger, pureCircuits } = contractModule;
 // import { Contract, ledger, pureCircuits, Offer } from '../../contract/src/index';
 
-import { type ContractAddress, convert_bigint_to_Uint8Array, encodeContractAddress } from '@midnight-ntwrk/compact-runtime';
+import { type ContractAddress, convert_bigint_to_Uint8Array } from '@midnight-ntwrk/compact-runtime';
 import { type Logger } from 'pino';
 import {
   type AtaulfoDerivedState,
@@ -50,7 +50,7 @@ export interface DeployedAtaulfoAPI {
 
   mint: (assetId: bigint) => Promise<void>;
   withdrawCollectedFees: () => Promise<bigint>;
-  createOffer: (assetId: bigint, price: bigint) => Promise<string>;
+  createOffer: (assetId: bigint, price: bigint, meta: string) => Promise<string>;
   cancelOffer: (offerId: string) => Promise<Offer>;
   depositFunds: (amount: bigint) => Promise<[bigint, bigint]>;
   withdrawFunds: (amount: bigint) => Promise<bigint>;
@@ -71,8 +71,8 @@ export interface DeployedAtaulfoAPI {
  *
  * In the future, Midnight.js will provide a private state provider that supports private state storage
  * keyed by contract address. This will remove the current workaround of sharing private state across
- * the deployed Ataulfo contracts, and allows for a unique secret key to be generated for each bulletin
- * board that the user interacts with.
+ * the deployed Ataulfo contracts, and allows for a unique secret key to be generated for each Ataulfo
+ * instance that the user interacts with.
  */
 // TODO: Update AtaulfoAPI to use contract level private state storage.
 export class AtaulfoAPI implements DeployedAtaulfoAPI {
@@ -108,20 +108,39 @@ export class AtaulfoAPI implements DeployedAtaulfoAPI {
       ],
       // ...and combine them to produce the required derived state.
       (ledgerState, privateState) => {
-        let offers = new Map<string, Offer>();
+        let offers = new Map<string, [Offer, boolean]>();
+        let myOffersCount = 0n;
         for (const [id, offer] of ledgerState.offers) {
-          offers.set(toHex(id), offer);
+          const offerId = toHex(id);
+          const isMine = offerId == toHex(pureCircuits.genOfferId(privateState.secretKey, offer.assetId, offer.price));
+          if (isMine) {
+            myOffersCount += 1n;
+          }
+          offers.set(offerId, [offer, isMine]);
         }
 
         let accounts = new Map<string, bigint>();
+        let myBalance = 0n;
         for (const [key, balance] of ledgerState.accounts) {
-          accounts.set(toHex(key), balance);
+          const balanceOwner = toHex(key);
+          if (balanceOwner == toHex(pureCircuits.genHiddenOwner(privateState.secretKey))) {
+            myBalance = balance;
+          }
+          accounts.set(balanceOwner, balance);
         }
+
+        const contractOwner = toHex(ledgerState.contractOwner);
+        const isContractOwner = contractOwner == toHex(pureCircuits.genHiddenOwner(privateState.secretKey));
 
         return {
           offers: offers,
           accounts: accounts,
-          secretKey: privateState.secretKey,
+          opsFee: ledgerState.opsFee,
+          treasuryBalance: ledgerState.treasury.value,
+          accountsTotalBalance: ledgerState.accountsTotalBalance,
+          isContractOwner: isContractOwner,
+          balance: myBalance,
+          offersPublished: myOffersCount,
         };
       },
     );
@@ -146,10 +165,10 @@ export class AtaulfoAPI implements DeployedAtaulfoAPI {
    * @remarks
    * This method can fail during local circuit execution if the Ataulfo is currently occupied.
    */
-  async createOffer(assetId: bigint, price: bigint): Promise<string> {
-    this.logger?.info(`creating offer for asset Id ${assetId} at a price of ${price}`);
+  async createOffer(assetId: bigint, price: bigint, meta: string): Promise<string> {
+    this.logger?.info(`creating offer for asset Id ${assetId} at a price of ${price}, with metadata: ${meta}`);
 
-    const txData = await this.deployedContract.callTx.createOffer(assetId, price);
+    const txData = await this.deployedContract.callTx.createOffer(assetId, price, meta);
 
     this.logger?.trace({
       transactionAdded: {
