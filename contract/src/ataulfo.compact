@@ -15,9 +15,14 @@ export sealed ledger contractOwner: Bytes<32>;
 
 // Buy or Sell offer
 export struct Offer {
-  publisher: Either<ZswapCoinPublicKey, ContractAddress>; // Publisher and current owner of the offered asset
-  assetId: Uint<128>; // TokenId of the asset offered
-  price: Uint<128>; // Price in atto for each unit of the offered asset/s
+  // Owner of the offered asset where payment will be sent.
+  assetOwner: Either<ZswapCoinPublicKey, ContractAddress>;
+  // TokenId of the asset offered
+  assetId: Uint<128>;
+  // Price in atto for each unit of the offered asset/s
+  price: Uint<128>;
+  // Optional metadata for the asset, format and content to be interpreted by the dApp
+  meta: Opaque<'string'>;
 }
 
 // Accounts (hidden owner) and their deposited native tokens balances.
@@ -98,14 +103,15 @@ export circuit withdrawCollectedFees(): Uint<128> {
   *
   * @param {Uint<128>} assetId - Id of the asset the offer is for
   * @param {Uint<128>} price - Price of the asset in this offer
+  * @param {Opaque<'string'>} meta - Metadata for the asset in this offer
   * @return {Bytes<32>} - The ID of the created offer.
   */
-export circuit createOffer(assetId: Uint<128>, price: Uint<128>): Bytes<32> {
+export circuit createOffer(assetId: Uint<128>, price: Uint<128>, meta: Opaque<'string'>): Bytes<32> {
   assert(price > 0, "Price must be greater than zero");
 
-  const publisher = getTxSender();
+  const assetOwner = getTxSender();
   const owner = NonFungibleToken_ownerOf(assetId);
-  assert((publisher == owner || NonFungibleToken_isApprovedForAll(owner, publisher)), "Offer publisher must be the owner or operator of the asset");
+  assert((assetOwner == owner || NonFungibleToken_isApprovedForAll(owner, assetOwner)), "Offer publisher must be the owner or operator of the asset");
 
   // WORKAROUND: transfers to contract are not yet supported so tokens will be locked in them.
   //NonFungibleToken_transferFrom(publisher, me, assetId);
@@ -115,18 +121,12 @@ export circuit createOffer(assetId: Uint<128>, price: Uint<128>): Bytes<32> {
   assert(NonFungibleToken_getApproved(assetId) == me, "Asset must be approved for the contract to be transfered");
   // END WORKAROUND
 
-  const offer = Offer { publisher: publisher, assetId: assetId, price: price };
+  const offer = Offer { assetOwner: assetOwner, assetId: assetId, price: price, meta: meta };
 
   // insert offer in the offers map
-  if (publisher.is_left) {
-     const offerId = genOfferId(publisher.left.bytes, assetId, price);
-     offers.insert(disclose(offerId), disclose(offer));
-     return offerId;
-  } else {
-     const offerId = genOfferId(publisher.right.bytes, assetId, price);
-     offers.insert(disclose(offerId), disclose(offer));
-     return offerId;
-  }
+  const offerId = disclose(genOfferId(localSecretKey(), assetId, price));
+  offers.insert(offerId, disclose(offer));
+  return offerId;
 }
 
 /**
@@ -136,7 +136,7 @@ export circuit createOffer(assetId: Uint<128>, price: Uint<128>): Bytes<32> {
   *
   * - The contract is initialized.
   * - The offer exists.
-  * - The caller is the publisher or the owner of the offer.
+  * - The caller is the publisher or the current owner of the asset.
   *
   * @param {Bytes<32>} offerId - Id of the offer to cancel
   * @return {Offer} - The offer just cancelled.
@@ -146,12 +146,13 @@ export circuit cancelOffer(offerId: Bytes<32>): Offer {
   const offer = offers.lookup(disclose(offerId));
   const txSender = getTxSender();
   const owner = NonFungibleToken_ownerOf(offer.assetId);
-  assert((offer.publisher == txSender || owner == txSender), "Offer can be cancelled by the publisher or owner");
+  const isPublisher = (offerId == genOfferId(localSecretKey(), offer.assetId, offer.price));
+  assert((isPublisher || owner == txSender), "Offer can be cancelled by the publisher or asset owner");
 
-  // TODO transfer the asset back to the publisher,
+  // TODO transfer the asset back to the owner of the asset,
   // for now we are only approving the contract for transfer so no need to transfer back
-  //const assetId = offer.assetId;
-  //NonFungibleToken_transferFrom(offer.publisher, txSender, offer.assetId);
+  //const me = myAddr();
+  //NonFungibleToken_transferFrom(me, txSender, offer.assetId);
   // END TODO
 
   // remove the offer
@@ -288,8 +289,8 @@ export circuit fulfillOffer(offerId: Bytes<32>): Offer {
     assert(isAssetStillApproved, "The offer has been revoked by the owner");
   }
   // END WORKAROUND
-  const buyer = getTxSender();
-  assert(offer.publisher != buyer, "Offer cannot be fulfilled by the publisher");
+  const isPublisher = (offerId == genOfferId(localSecretKey(), offer.assetId, offer.price));
+  assert(!isPublisher, "Offer cannot be fulfilled by the publisher");
   const balanceOwner = genHiddenOwner(localSecretKey());
   assert(accounts.member(disclose(balanceOwner)), "No balance deposited to fulfill the offer and operation fee");
   const buyerBalance = accounts.lookup(disclose(balanceOwner));
@@ -297,10 +298,11 @@ export circuit fulfillOffer(offerId: Bytes<32>): Offer {
   assert(buyerBalance >= grossPrice, "Insufficient balance to fulfill the offer and operation fee");
 
   // transfer the asset to the buyer
-  NonFungibleToken_transferFrom(offer.publisher, buyer, offer.assetId);
+  const buyer = getTxSender();
+  NonFungibleToken_transferFrom(offer.assetOwner, buyer, offer.assetId);
 
   // send the tDUST payment to the publisher
-  const sendResult = send(treasury, offer.publisher, disclose(offer.price));
+  const sendResult = send(treasury, offer.assetOwner, disclose(offer.price));
   assert(sendResult.sent.value == offer.price, "Failed to send payment");
   if (sendResult.change.is_some) {
      treasury.writeCoin(sendResult.change.value, me);
@@ -333,9 +335,9 @@ circuit myAddr(): Either<ZswapCoinPublicKey, ContractAddress> {
   return right<ZswapCoinPublicKey, ContractAddress>(kernel.self());
 }
 
-// Helper to generate a unique offer ID based on the publisher, asset ID, and price.
+// Generate a unique offer ID based on the publisher, asset ID, and price.
 // We include the publisher in the ID to support different operators offering the same asset.
-circuit genOfferId(publisher: Bytes<32>, assetId: Uint<128>, price: Uint<128>): Bytes<32> {
+export circuit genOfferId(publisher: Bytes<32>, assetId: Uint<128>, price: Uint<128>): Bytes<32> {
   return persistentHash<Vector<4, Bytes<32>>>(
            [pad(32, "ataulfo_offer_id:"),
             publisher,
@@ -345,7 +347,7 @@ circuit genOfferId(publisher: Bytes<32>, assetId: Uint<128>, price: Uint<128>): 
          Bytes<32>;
 }
 
-// Helper to generate an owner ID based on the owner's secret key.
+// Generate an owner ID based on the owner's secret key.
 export circuit genHiddenOwner(sk: Bytes<32>): Bytes<32> {
   return persistentHash<Vector<2, Bytes<32>>>([pad(32, "ataulfo_hidden_owner:"), sk]) as Bytes<32>;
 }
