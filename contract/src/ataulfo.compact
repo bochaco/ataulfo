@@ -4,24 +4,24 @@ import CompactStandardLibrary;
 
 import NonFungibleToken prefix NonFungibleToken_;
 
-// Contract's own treasury of native tokens
+// Contract's own treasury of native tokens.
 export ledger treasury: QualifiedCoinInfo;
 
-// Fee charge for each deposit/withdrawal/fulfillment operation to use for transfer fees.
+// Fee charged for each deposit/withdrawal/fulfillment operation.
 export sealed ledger opsFee: Uint<128>;
 
-// Creator and owner of the contract who can mint assets and withdraw collected operations fees.
+// Creator and owner of the contract who can mint assets and withdraw collected operation fees.
 export sealed ledger contractOwner: Bytes<32>;
 
-// Buy or Sell offer
+// Sell offer
 export struct Offer {
   // Owner of the offered asset where payment will be sent.
   assetOwner: Either<ZswapCoinPublicKey, ContractAddress>;
-  // TokenId of the asset offered
+  // TokenId of the asset offered.
   assetId: Uint<128>;
-  // Price in atto for each unit of the offered asset/s
+  // Price in native tokens for each unit of the offered asset/s.
   price: Uint<128>;
-  // Optional metadata for the asset, format and content to be interpreted by the dApp
+  // Optional metadata for the asset, format and content to be interpreted by the dApp.
   meta: Opaque<'string'>;
 }
 
@@ -34,7 +34,7 @@ export ledger accountsTotalBalance: Uint<128>;
 // Map of all current sell offers
 export ledger offers: Map<Bytes<32>, Offer>;
 
-// Witness for the local secret key used to managed deposited funds
+// Witness for the local secret key used to manage deposited funds.
 witness localSecretKey(): Bytes<32>;
 
 constructor(name: Opaque<"string">, symbol: Opaque<"string">, fee: Uint<128>) {
