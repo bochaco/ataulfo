@@ -21,11 +21,9 @@
  * of the servers this file relies on.
  */
 
-import * as crypto from 'crypto';
 import { createInterface, type Interface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { WebSocket } from 'ws';
-// import { webcrypto } from 'crypto';
 import {
   type AtaulfoProviders,
   AtaulfoAPI,
@@ -34,7 +32,7 @@ import {
   type PrivateStateId,
   ataulfoPrivateStateKey,
 } from '../../api/src/index';
-import { ledger, type Ledger, Offer } from '../../contract/src/managed/ataulfo/contract/index.cjs';
+import { ledger, type Ledger } from '../../contract/src/managed/ataulfo/contract/index.cjs';
 import {
   type BalancedTransaction,
   createBalancedTx,
@@ -95,7 +93,14 @@ You can do one of the following:
   3. Exit
 Which would you like to do? `;
 
-const deployOrJoin = async (providers: AtaulfoProviders, rli: Interface, localSecretKey: Uint8Array, logger: Logger): Promise<AtaulfoAPI | null> => {
+const askForPassword = async (rli: Interface): Promise<Uint8Array> => {
+  // Ask for an account password
+  const pwd = await rli.question(`Enter your Ataulfo marketplace account password: `);
+  const accountPassword = Uint8Array.from(pwd);
+  return accountPassword;
+}
+
+const deployOrJoin = async (providers: AtaulfoProviders, rli: Interface, logger: Logger): Promise<AtaulfoAPI | null> => {
   let api: AtaulfoAPI | null = null;
 
   while (true) {
@@ -105,11 +110,13 @@ const deployOrJoin = async (providers: AtaulfoProviders, rli: Interface, localSe
         const nftName = await rli.question('What is the NFT name for the assets? ');
         const nftSymbol = await rli.question('What is the NFT symbol for the assets? ');
         const operationsFee = await rli.question('What is the operations fee to charge by the contract? ');
-        api = await AtaulfoAPI.deploy(providers, nftName, nftSymbol, localSecretKey, BigInt(operationsFee.trim()), logger);
+        const accountPassword = await askForPassword(rli);
+        api = await AtaulfoAPI.deploy(providers, nftName, nftSymbol, accountPassword, BigInt(operationsFee.trim()), logger);
         logger.info(`Deployed contract at address: ${api.deployedContractAddress}`);
         return api;
       case '2':
-        api = await AtaulfoAPI.join(providers, await rli.question('What is the contract address (in hex)? '), localSecretKey, logger);
+        const contractAddr = await rli.question('What is the contract address (in hex)? ');
+        api = await AtaulfoAPI.join(providers, contractAddr, await askForPassword(rli), logger);
         logger.info(`Joined contract at address: ${api.deployedContractAddress}`);
         return api;
       case '3':
@@ -140,7 +147,10 @@ const displayLedgerState = async (
       logger.info(`No offers`);
     } else {
       logger.info(`Current offers:`);
+
+      let index = 0;
       for (const [id, offer] of ledgerState.offers) {
+        index++;
         let assetOwner;
         if (offer.assetOwner.is_left) {
           assetOwner = toHex(offer.assetOwner.left.bytes);
@@ -148,7 +158,7 @@ const displayLedgerState = async (
           assetOwner = toHex(offer.assetOwner.right.bytes);
         }
 
-        logger.info(`- Id: ${toHex(id)}, assetOwner: ${assetOwner}, asset: ${offer.assetId}, price: ${offer.price}`);
+        logger.info(`Offer #${index}: {\n\tid: ${toHex(id)}\n\tassetOwner: ${assetOwner}\n\tassetId: ${offer.assetId}\n\tprice: ${offer.price}\n\tmaetadata: ${offer.meta}\n}`);
       }
     }
 
@@ -193,7 +203,7 @@ const displayDerivedState = (ledgerDerivedState: AtaulfoDerivedState | undefined
   } else {
     logger.info(`This contract was deployed by me? :${ledgerDerivedState.isContractOwner}`);
 
-    logger.info(`My balance:${ledgerDerivedState.balance}`);
+    logger.info(`My balance: ${ledgerDerivedState.balance}`);
     logger.info(`Current offers:`);
     for (const [id, [offer, isMine]] of ledgerDerivedState.offers) {
       logger.info(`- My offer?: ${isMine}, Id: ${id}, asset: ${offer.assetId}, price: ${offer.price}`);
@@ -224,19 +234,19 @@ You can do one of the following:
   12. Exit
 Which would you like to do? `;
 
-const mainLoop = async (wallet: Wallet, providers: AtaulfoProviders, rli: Interface, localSecretKey: Uint8Array, logger: Logger): Promise<void> => {
-  logger.info(`Local secret key to use: ${toHex(localSecretKey)}`);
-  const ataulfoApi = await deployOrJoin(providers, rli, localSecretKey, logger);
+const mainLoop = async (wallet: Wallet, providers: AtaulfoProviders, rli: Interface, logger: Logger): Promise<void> => {
+  const ataulfoApi = await deployOrJoin(providers, rli, logger);
   if (ataulfoApi === null) {
     return;
   }
+
   let currentState: AtaulfoDerivedState | undefined;
   const stateObserver = {
     next: (state: AtaulfoDerivedState) => (currentState = state),
   };
   const subscription = ataulfoApi.state$.subscribe(stateObserver);
-  while (true) {
-    try {
+  try {
+    while (true) {
       const choice = await rli.question(MAIN_LOOP_QUESTION);
       switch (choice) {
         case '1': {
@@ -247,8 +257,15 @@ const mainLoop = async (wallet: Wallet, providers: AtaulfoProviders, rli: Interf
         case '2': {
           const assetId = await rli.question(`What asset Id do you want to offer? `);
           const price = await rli.question(`What price do you want to offer the asset at? `);
-          const meta = await rli.question(`What image URL do you want to associate with the offer? `);
-          const offerId = await ataulfoApi.createOffer(BigInt(assetId.trim()), BigInt(price.trim()), meta.trim());
+          const location = await rli.question(`Location of the asset? `);
+          const imageUrl = await rli.question(`What image URL do you want to associate with the offer? `);
+          const desc = await rli.question(`Description of the offer? `);
+          const meta = {
+            location: location,
+            imageUrl: imageUrl,
+            desc: desc
+          };
+          const offerId = await ataulfoApi.createOffer(BigInt(assetId.trim()), BigInt(price.trim()), JSON.stringify(meta));
           logger.info(`Offer created with Id: ${offerId}`);
           break;
         }
@@ -295,13 +312,12 @@ const mainLoop = async (wallet: Wallet, providers: AtaulfoProviders, rli: Interf
         default:
           logger.error(`Invalid choice: ${choice}`);
       }
-    } catch (e) {
-      logger.error(`Error occurred: ${e}`);
     }
+  } finally {
+    // While we allow errors to bubble up to the 'run' function, we will always need to dispose of the state
+    // subscription when we exit.
+    subscription.unsubscribe();
   }
-  // While we allow errors to bubble up to the 'run' function, we will always need to dispose of the state
-  // subscription when we exit.
-  //    subscription.unsubscribe();
 };
 
 /* **********************************************************************
@@ -493,8 +509,7 @@ export const run = async (config: Config, logger: Logger, dockerEnv?: DockerComp
         walletProvider: walletAndMidnightProvider,
         midnightProvider: walletAndMidnightProvider,
       };
-      const secretKey = crypto.createHash('sha256').update(seed).digest();
-      await mainLoop(wallet, providers, rli, secretKey, logger);
+      await mainLoop(wallet, providers, rli, logger);
     }
   } catch (e) {
     logError(logger, e);

@@ -350,7 +350,6 @@ export class AtaulfoAPI implements DeployedAtaulfoAPI {
   }
 
   private static async getPrivateState(providers: AtaulfoProviders, localSecretKey: Uint8Array): Promise<AtaulfoPrivateState> {
-    //const existingPrivateState = await providers.privateStateProvider.get(ataulfoPrivateStateKey);
     return createAtaulfoPrivateState(localSecretKey);
   }
 }
