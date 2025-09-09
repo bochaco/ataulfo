@@ -87,6 +87,7 @@ const dashboardMetricsOwner = (ataulfoState: AtaulfoDerivedState) => [
  * @param ataulfoState The current AtaulfoDerivedState.
  */
 const dashboardMetricsUsers = (ataulfoState: AtaulfoDerivedState) => [
+  ['Operation fee', ataulfoState.opsFee],
   ['Offers published by you', ataulfoState.offersPublished],
   ['Account balance', ataulfoState.balance],
 ];
@@ -515,10 +516,19 @@ const deserializeMetadataJson = (string: string): { location: string, imageUrl: 
   try {
     // Attempt to parse the JSON string
     const parsedData = JSON.parse(string);
-    const url = (new URL(parsedData.imageUrl).href ? parsedData.imageUrl : '');
+    const url = parseUrl(parsedData.imageUrl);
     return { location: parsedData.location, imageUrl: url, desc: `${parsedData.desc.slice(0, 200)}...` };
   } catch (error) {
-    const url = (new URL(string).href ? string : '');
+    const url = parseUrl(string);
     return { location: '', imageUrl: url, desc: '' }
+  }
+}
+
+const parseUrl = (urlStr: string): string => {
+  try {
+    const url = (new URL(urlStr).href ? urlStr : '');
+    return url;
+  } catch (error) {
+    return '';
   }
 }
