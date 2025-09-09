@@ -59,20 +59,16 @@ describe("Ataulfo smart contract", () => {
     simulator.mint(assetId);
     expect(() => simulator.mint(assetId))
       .toThrow("failed assert: NonFungibleToken: Invalid Sender"); // TODO: improve error message...?
-    /* REQUIRES CHANGES TO CONTRACT
     expect(simulator.isOwnerOf(assetId)).toBe(true);
     expect(() =>
       simulator.isOwnerOf(10n),
     ).toThrow("failed assert: Invalid asset ID");
-    */
 
     const pk2 = randomCoinPublicKeyHex();
     simulator.switchUser(randomBytes(32), pk2);
     expect(() => simulator.mint(2n))
       .toThrow("failed assert: Only the contract owner can mint new assets");
-    /* REQUIRES CHANGES TO CONTRACT
     expect(simulator.isOwnerOf(assetId)).toBe(false);
-    */
   });
 
   it("publishing an offer by asset owner", () => {
@@ -116,7 +112,6 @@ describe("Ataulfo smart contract", () => {
       .toThrow("failed assert: Offer publisher must be the owner or operator of the asset");
     expect(simulator.getLedger().offers.isEmpty()).toBe(true);
 
-    /* REQUIRES CHANGES TO CONTRACT
     // but if the owner approves another party as an operator, it should then be able to create an offer.
     // TODO: createOffer doesn't allow yet approved on a single asset, only owner and operators for now.
     // In the future we shall also test a party which was approved only for this asset to create offers.
@@ -129,7 +124,6 @@ describe("Ataulfo smart contract", () => {
     expect(ledgerState.offers.lookup(offerId).assetId).toEqual(assetId);
     expect(ledgerState.offers.lookup(offerId).price).toEqual(price);
     expect(ledgerState.offers.lookup(offerId).meta).toEqual(meta);
-    */
   });
 
   it("creating offers with same asset more than once", () => {
@@ -162,7 +156,6 @@ describe("Ataulfo smart contract", () => {
     expect(ledgerState.offers.lookup(offerId3).price).toEqual(2000n);
     expect(ledgerState.offers.lookup(offerId3).meta).toEqual(newMeta);
 
-    /* REQUIRES CHANGES TO CONTRACT
     const pk2 = randomCoinPublicKeyHex();
     const pwd2 = randomBytes(32);
     simulator.setApprovalForAll(encodeCoinPublicKey(pk2), true);
@@ -170,7 +163,6 @@ describe("Ataulfo smart contract", () => {
     const offerId4 = simulator.createOffer(assetId, 2000n, newMeta);
     expect(simulator.getLedger().offers.size()).toEqual(3n);
     expect(offerId3 != offerId4).toBe(true);
-    */
   });
 
   it("cancelling an offer by publisher", () => {
@@ -205,7 +197,6 @@ describe("Ataulfo smart contract", () => {
     simulator.mint(assetId);
 
     // another party set as operator can create an offer
-    /* REQUIRES CHANGES TO CONTRACT
     const pk2 = randomCoinPublicKeyHex();
     const pwd2 = randomBytes(32);
     simulator.setApprovalForAll(encodeCoinPublicKey(pk2), true);
@@ -220,7 +211,6 @@ describe("Ataulfo smart contract", () => {
     expect(offer.price).toEqual(price);
     expect(offer.meta).toEqual(meta);
     expect(simulator.getLedger().offers.isEmpty()).toBe(true);
-    */
   });
 
   it("deposit funds", () => {
