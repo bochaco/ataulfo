@@ -63,6 +63,80 @@ export circuit mint(assetId: Uint<128>): [] {
 }
 
 /**
+ * @description Returns whether the caller is owner of the `assetId`.
+ *
+ * Requirements:
+ *
+ * - The contract is initialized.
+ *
+ * @param {Uint<128>} assetId - The target asset of the owner query.
+ * @return {Boolean} - Whether the caller is the owner of the asset.
+ */
+/*REQUIRED TO IMPROVE TESTS
+export circuit isOwnerOf(assetId: Uint<128>): Boolean {
+  const assetOwner = NonFungibleToken__ownerOf(assetId);
+  assert(assetOwner != burnAddress(), "Invalid asset ID");
+  return assetOwner == getTxSender();
+}
+*/
+
+/**
+ * @description Approve a party to create offers with the `assetId`.
+ *
+ * Requirements:
+ *
+ * - The contract is initialized.
+ *
+ * @param {Uint<128>} assetId - The target asset to approve.
+ * @param {Either<ZswapCoinPublicKey, ContractAddress>} target - Who is given transfer approval.
+ * @return {[]} - Empty tuple.
+ */
+/*REQUIRED TO IMPROVE TESTS
+export circuit assetApprove(assetId: Uint<128>, target: Either<ZswapCoinPublicKey, ContractAddress>): [] {
+  NonFungibleToken_approve(target, assetId);
+}
+*/
+
+/**
+ * @description Returns whether the caller is caller is approved on the `assetId`.
+ *
+ * Requirements:
+ *
+ * - The contract is initialized.
+ *
+ * @param {Uint<128>} assetId - The target asset to check approval.
+ * @return {Boolean} - Whether the caller is approved.
+ */
+/*REQUIRED TO IMPROVE TESTS
+export circuit isAssetApproved(assetId: Uint<128>): Boolean {
+  const approved = NonFungibleToken_getApproved(assetId);
+  assert(approved != burnAddress(), "Invalid asset ID");
+  return approved == getTxSender();
+}
+*/
+
+/**
+ * @description Approve or remove `operator` as an operator for the caller.
+ * Operators can create offers for any token owned by the caller.
+ *
+ * Requirements:
+ *
+ * - The contract is initialized.
+ * - The `operator` cannot be the address zero.
+ *
+ * @param {Either<ZswapCoinPublicKey, ContractAddress>} operator - An operator to manage the caller's tokens
+ * @param {Boolean} approved - A boolean determining if `operator` may manage all tokens of the caller
+ * @return {[]} - Empty tuple.
+ */
+/*REQUIRED TO IMPROVE TESTS
+export circuit setApprovalForAll(
+                 operator: Either<ZswapCoinPublicKey, ContractAddress>, approved: Boolean): [] {
+  NonFungibleToken_setApprovalForAll(operator, approved);
+  return [];
+}
+*/
+
+/**
   * @description Withdraw collected fees.
   *
   * Requirements:
@@ -109,9 +183,11 @@ export circuit withdrawCollectedFees(): Uint<128> {
 export circuit createOffer(assetId: Uint<128>, price: Uint<128>, meta: Opaque<'string'>): Bytes<32> {
   assert(price > 0, "Price must be greater than zero");
 
-  const assetOwner = getTxSender();
+  const publisher = getTxSender();
   const owner = NonFungibleToken_ownerOf(assetId);
-  assert((assetOwner == owner || NonFungibleToken_isApprovedForAll(owner, assetOwner)), "Offer publisher must be the owner or operator of the asset");
+  // TODO: also an approved party should be able to create the offer.
+  // We cannot do this untill transfers to contract are supported.
+  assert((publisher == owner || NonFungibleToken_isApprovedForAll(owner, publisher)), "Offer publisher must be the owner or operator of the asset");
 
   // WORKAROUND: transfers to contract are not yet supported so tokens will be locked in them.
   //NonFungibleToken_transferFrom(publisher, me, assetId);
@@ -121,7 +197,7 @@ export circuit createOffer(assetId: Uint<128>, price: Uint<128>, meta: Opaque<'s
   assert(NonFungibleToken_getApproved(assetId) == me, "Asset must be approved for the contract to be transfered");
   // END WORKAROUND
 
-  const offer = Offer { assetOwner: assetOwner, assetId: assetId, price: price, meta: meta };
+  const offer = Offer { assetOwner: publisher, assetId: assetId, price: price, meta: meta };
 
   // insert offer in the offers map
   const offerId = disclose(genOfferId(localSecretKey(), assetId, price));

@@ -1,7 +1,7 @@
 {
   "name": "ataulfo-monorepo",
   "version": "0.1.0",
-  "author": "IOG",
+  "author": "bochaco",
   "license": "MIT",
   "private": true,
   "type": "module",
