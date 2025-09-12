@@ -259,7 +259,7 @@ describe("Ataulfo smart contract", () => {
     expect(newDeposited).toEqual(additionalAmount - opsFee);
     expect(updatedBalance).toEqual(newBalance);
     ledgerState = simulator.getLedger();
-    // FIXME!!! expect(ledgerState.treasury.value).toEqual(amount + additionalAmount);
+    // FIXME!!! expect(ledgerState.treasury.value).toBe(amount + additionalAmount);
     expect(ledgerState.accounts.size()).toEqual(1n);
     expect(ledgerState.accountsTotalBalance).toEqual(newBalance);
     expect(ledgerState.accounts.lookup(balanceOwner)).toEqual(newBalance);
@@ -334,22 +334,26 @@ describe("Ataulfo smart contract", () => {
       .toThrow("failed assert: No balance deposited to fulfill the offer and operation fee");
 
     // we'll need a balance of: price + 2*opsFee to fulfill it, since we pay for depositing and for fulfilling it
-    let coinInfo = createCoinInfo(nativeToken(), price + opsFee);
+    const initialAmount = price + opsFee;
+    let coinInfo = createCoinInfo(nativeToken(), initialAmount);
     simulator.depositFunds(coinInfo);
+    expect(simulator.balance()).toBe(initialAmount - opsFee);
+    expect(simulator.getLedger().treasury.value).toBe(initialAmount);
     expect(() => simulator.fulfillOffer(offerId))
       .toThrow("failed assert: Insufficient balance to fulfill the offer and operation fee");
     const invalidOfferId = randomBytes(32);
     expect(() => simulator.fulfillOffer(invalidOfferId))
       .toThrow("failed assert: Offer does not exist");
 
-    // FIXME: for some reason the treasury is not updated in the simulator,
-    // therefore we need to deposit the full amount needed rather than topping up what's missing
+
+    // FIXME: we have an issue in how we initialise and reset the treasury to zero.
     //const topUpAmount = 2n * opsFee;
     const topUpAmount = price + 2n * opsFee;
     coinInfo = createCoinInfo(nativeToken(), topUpAmount);
     simulator.depositFunds(coinInfo);
-    //expect(simulator.balance()).toEqual(price + opsFee);
-    expect(simulator.getLedger().treasury.value).toEqual(topUpAmount)
+    expect(simulator.balance()).toBe(initialAmount + topUpAmount - 2n * opsFee);
+    // FIXME!!! expect(simulator.getLedger().treasury.value).toEqual(initialAmount + topUpAmount);
+
     const offer = simulator.fulfillOffer(offerId);
     const ledgerState = simulator.getLedger();
     expect(ledgerState.offers.isEmpty()).toBe(true);
@@ -357,7 +361,55 @@ describe("Ataulfo smart contract", () => {
     expect(offer.assetId).toEqual(assetId);
     expect(offer.price).toEqual(price);
     expect(offer.meta).toEqual(meta);
+    expect(simulator.balance()).toBe(initialAmount + topUpAmount - price - 3n * opsFee);
+    // FIXME!!! expect(simulator.getLedger().treasury.value).toEqual(initialAmount + topUpAmount - price);
+
     expect(() => simulator.fulfillOffer(offerId))
       .toThrow("failed assert: Offer does not exist");
+  });
+
+  it("withdraw collected fees", () => {
+    const pk = randomCoinPublicKeyHex();
+    const user = randomBytes(32);
+    const simulator = new AtaulfoSimulator(user, pk);
+    const opsFee = simulator.getLedger().opsFee;
+    const amount = 2500n;
+
+    expect(() => simulator.withdrawCollectedFees())
+      .toThrow("failed assert: No collected fees available for withdrawal");
+
+    let coinInfo = createCoinInfo(nativeToken(), amount);
+    simulator.depositFunds(coinInfo);
+    const balanceOwner = simulator.genHiddenOwner();
+
+    const expectedCollectedFees = 2n * opsFee;
+    const withdrawalAmount = amount - expectedCollectedFees;
+    const updatedBalance = simulator.withdrawFunds(withdrawalAmount);
+    expect(updatedBalance).toEqual(0n);
+    let ledgerState = simulator.getLedger();
+    expect(ledgerState.treasury.value).toEqual(amount - withdrawalAmount);
+    expect(ledgerState.accounts.size()).toEqual(0n);
+    expect(ledgerState.accountsTotalBalance).toEqual(0n);
+    expect(simulator.balance()).toEqual(0n);
+
+    expect(simulator.withdrawCollectedFees()).toBe(expectedCollectedFees);
+    ledgerState = simulator.getLedger();
+    expect(ledgerState.treasury.value).toEqual(0n);
+    expect(ledgerState.accounts.size()).toEqual(0n);
+    expect(ledgerState.accountsTotalBalance).toEqual(0n);
+    expect(simulator.balance()).toEqual(0n);
+
+    const lastAmount = 10n;
+    coinInfo = createCoinInfo(nativeToken(), lastAmount);
+    simulator.depositFunds(coinInfo);
+    ledgerState = simulator.getLedger();
+    expect(ledgerState.treasury.value).toEqual(lastAmount);
+    expect(simulator.balance()).toEqual(lastAmount - opsFee);
+
+    const pk2 = randomCoinPublicKeyHex();
+    const pwd2 = randomBytes(32);
+    simulator.switchUser(pwd2, pk2);
+    expect(() => simulator.withdrawCollectedFees())
+      .toThrow("failed assert: Only the contract owner can withdraw collected fees");
   });
 });
