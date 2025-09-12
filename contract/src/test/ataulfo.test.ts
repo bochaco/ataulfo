@@ -154,11 +154,10 @@ describe("Ataulfo smart contract", () => {
     const newMeta = `different-meta-${meta}`;
     const offerId3 = simulator.createOffer(assetId, 2000n, newMeta);
     expect(offerId1 != offerId3).toBe(true);
-    // FIXME!!! expect(offerId2 == offerId3).toBe(true);
+    expect(offerId2).toEqual(offerId3);
     ledgerState = simulator.getLedger();
     expect(ledgerState.offers.size()).toEqual(2n);
     expect(ledgerState.offers.lookup(offerId1).price).toEqual(1000n);
-    // FIXME!!! expect(ledgerState.offers.member(offerId2)).toBe(false);
     expect(ledgerState.offers.lookup(offerId3).price).toEqual(2000n);
     expect(ledgerState.offers.lookup(offerId3).meta).toEqual(newMeta);
 
