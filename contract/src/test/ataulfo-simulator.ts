@@ -90,7 +90,6 @@ export class AtaulfoSimulator {
     return ledger(this.circuitContext.transactionContext.state);
   }
 
-  /* REQUIRES CHANGES TO CONTRACT
   public isOwnerOf(assetId: bigint): boolean {
     const res = this.contract.impureCircuits.isOwnerOf(
       this.circuitContext, assetId
@@ -120,7 +119,6 @@ export class AtaulfoSimulator {
     ).context;
     return ledger(this.circuitContext.transactionContext.state);
   }
-  */
 
   public withdrawCollectedFees(): bigint {
     const res = this.contract.impureCircuits.withdrawCollectedFees(
