@@ -6,6 +6,9 @@ import NonFungibleToken prefix NonFungibleToken_;
 
 // Contract's own treasury of native tokens.
 export ledger treasury: QualifiedCoinInfo;
+// Flag to keep track whether there are coins stored on the treasury.
+// Is there a better way so this flag is not needed???
+ledger treasuryWithCoins: Boolean;
 
 // Fee charged for each deposit/withdrawal/fulfillment operation.
 export sealed ledger opsFee: Uint<128>;
@@ -41,6 +44,7 @@ constructor(name: Opaque<"string">, symbol: Opaque<"string">, fee: Uint<128>) {
   NonFungibleToken_initialize(name, symbol);
   opsFee = disclose(fee);
   contractOwner = disclose(genHiddenOwner(localSecretKey()));
+  treasuryWithCoins = false;
 }
 
 /**
@@ -152,6 +156,7 @@ export circuit withdrawCollectedFees(): Uint<128> {
      const me = myAddr();
      treasury.writeCoin(sendResult.change.value, me);
   } else {
+     treasuryWithCoins = false;
      treasury.resetToDefault();
   }
 
@@ -247,13 +252,14 @@ export circuit depositFunds(coinInfo: CoinInfo): [Uint<128>, Uint<128>] {
 
   receive(disclose(coinInfo));
   const me = myAddr();
-  // TODO: improve this check with initialised flags
-  if (treasury.mt_index == 0) {
+  if (!treasuryWithCoins) {
      treasury.writeCoin(disclose(coinInfo), me);
+     treasuryWithCoins = true;
   } else {
      const mergedCoin = mergeCoinImmediate(treasury, disclose(coinInfo));
      treasury.writeCoin(disclose(mergedCoin), me);
   }
+
   // we need to calculate the deposited value to account for contract fee
   const netAmount = (coinInfo.value - opsFee) as Uint<128>;
   accountsTotalBalance = (accountsTotalBalance + disclose(netAmount)) as Uint<128>;
@@ -297,6 +303,7 @@ export circuit withdrawFunds(amount: Uint<128>): Uint<128> {
      const me = myAddr();
      treasury.writeCoin(sendResult.change.value, me);
   } else {
+     treasuryWithCoins = false;
      treasury.resetToDefault();
   }
 
@@ -375,6 +382,7 @@ export circuit fulfillOffer(offerId: Bytes<32>): Offer {
   if (sendResult.change.is_some) {
      treasury.writeCoin(sendResult.change.value, me);
   } else {
+     treasuryWithCoins = false;
      treasury.resetToDefault();
   }
 

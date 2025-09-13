@@ -249,7 +249,7 @@ describe("Ataulfo smart contract", () => {
     expect(newDeposited).toEqual(additionalAmount - opsFee);
     expect(updatedBalance).toEqual(newBalance);
     ledgerState = simulator.getLedger();
-    // FIXME!!! expect(ledgerState.treasury.value).toBe(amount + additionalAmount);
+    expect(ledgerState.treasury.value).toBe(amount + additionalAmount);
     expect(ledgerState.accounts.size()).toEqual(1n);
     expect(ledgerState.accountsTotalBalance).toEqual(newBalance);
     expect(ledgerState.accounts.lookup(balanceOwner)).toEqual(newBalance);
@@ -308,7 +308,7 @@ describe("Ataulfo smart contract", () => {
     const opsFee = simulator.getLedger().opsFee;
 
     const assetId = 1200n;
-    const price = 768n;
+    const price = 100n;
     const meta = toHex(randomBytes(10));
     simulator.mint(assetId);
 
@@ -335,14 +335,11 @@ describe("Ataulfo smart contract", () => {
     expect(() => simulator.fulfillOffer(invalidOfferId))
       .toThrow("failed assert: Offer does not exist");
 
-
-    // FIXME: we have an issue in how we initialise and reset the treasury to zero.
-    //const topUpAmount = 2n * opsFee;
-    const topUpAmount = price + 2n * opsFee;
+    const topUpAmount = 2n * opsFee;
     coinInfo = createCoinInfo(nativeToken(), topUpAmount);
     simulator.depositFunds(coinInfo);
     expect(simulator.balance()).toBe(initialAmount + topUpAmount - 2n * opsFee);
-    // FIXME!!! expect(simulator.getLedger().treasury.value).toEqual(initialAmount + topUpAmount);
+    expect(simulator.getLedger().treasury.value).toEqual(initialAmount + topUpAmount);
 
     const offer = simulator.fulfillOffer(offerId);
     const ledgerState = simulator.getLedger();
@@ -352,7 +349,7 @@ describe("Ataulfo smart contract", () => {
     expect(offer.price).toEqual(price);
     expect(offer.meta).toEqual(meta);
     expect(simulator.balance()).toBe(initialAmount + topUpAmount - price - 3n * opsFee);
-    // FIXME!!! expect(simulator.getLedger().treasury.value).toEqual(initialAmount + topUpAmount - price);
+    expect(simulator.getLedger().treasury.value).toEqual(initialAmount + topUpAmount - price);
 
     expect(() => simulator.fulfillOffer(offerId))
       .toThrow("failed assert: Offer does not exist");
