@@ -48,9 +48,9 @@ export interface DeployedAtaulfoAPI {
   readonly deployedContractAddress: ContractAddress;
   readonly state$: Observable<AtaulfoDerivedState>;
 
-  mint: (assetId: bigint) => Promise<void>;
+  mint: (assetId: bigint, shares: bigint) => Promise<void>;
   withdrawCollectedFees: () => Promise<bigint>;
-  createOffer: (assetId: bigint, price: bigint, meta: string) => Promise<string>;
+  createOffer: (assetId: bigint, shares: bigint, min: bigint, price: bigint, meta: string) => Promise<string>;
   cancelOffer: (offerId: string) => Promise<Offer>;
   depositFunds: (amount: bigint) => Promise<[bigint, bigint]>;
   withdrawFunds: (amount: bigint) => Promise<bigint>;
@@ -165,10 +165,10 @@ export class AtaulfoAPI implements DeployedAtaulfoAPI {
    * @remarks
    * This method can fail during local circuit execution if the Ataulfo is currently occupied.
    */
-  async createOffer(assetId: bigint, price: bigint, meta: string): Promise<string> {
+  async createOffer(assetId: bigint, shares: bigint, min: bigint, price: bigint, meta: string): Promise<string> {
     this.logger?.info(`creating offer for asset Id ${assetId} at a price of ${price}, with metadata: ${meta}`);
 
-    const txData = await this.deployedContract.callTx.createOffer(assetId, price, meta);
+    const txData = await this.deployedContract.callTx.createOffer(assetId, shares, min, price, meta);
 
     this.logger?.trace({
       transactionAdded: {
@@ -197,10 +197,10 @@ export class AtaulfoAPI implements DeployedAtaulfoAPI {
     return txData.private.result;
   }
 
-  async mint(assetId: bigint): Promise<void> {
+  async mint(assetId: bigint, shares: bigint): Promise<void> {
     this.logger?.info(`minting new token with Id ${assetId}`);
 
-    const txData = await this.deployedContract.callTx.mint(assetId);
+    const txData = await this.deployedContract.callTx.mint(assetId, shares);
 
     this.logger?.trace({
       transactionAdded: {
@@ -298,14 +298,14 @@ export class AtaulfoAPI implements DeployedAtaulfoAPI {
    * @returns A `Promise` that resolves with a {@link AtaulfoAPI} instance that manages the newly deployed
    * {@link DeployedAtaulfoContract}; or rejects with a deployment error.
    */
-  static async deploy(providers: AtaulfoProviders, nftName: string, nftSymbol: string, localSecretKey: Uint8Array, operationsFee: bigint, logger?: Logger): Promise<AtaulfoAPI> {
+  static async deploy(providers: AtaulfoProviders, uri: string, localSecretKey: Uint8Array, operationsFee: bigint, logger?: Logger): Promise<AtaulfoAPI> {
     logger?.info('deployContract');
 
     const deployedAtaulfoContract = await deployContract<typeof ataulfoContractInstance>(providers, {
       privateStateId: ataulfoPrivateStateKey,
       contract: ataulfoContractInstance,
       initialPrivateState: await AtaulfoAPI.getPrivateState(providers, localSecretKey),
-      args: [nftName, nftSymbol, operationsFee]
+      args: [uri, operationsFee]
     });
 
     logger?.trace({
