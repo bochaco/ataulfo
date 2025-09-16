@@ -47,7 +47,7 @@ export class AtaulfoSimulator {
       currentContractState,
       currentZswapLocalState,
     } = this.contract.initialState(
-      constructorContext({ secretKey }, senderPk), 'test-asset', 'test-symbol', 1n
+      constructorContext({ secretKey }, senderPk), 'http://ataulfo.rwa', 1n
     );
     this.circuitContext = {
       currentPrivateState,
@@ -82,16 +82,16 @@ export class AtaulfoSimulator {
     return this.circuitContext.currentPrivateState;
   }
 
-  public mint(assetId: bigint): Ledger {
+  public mint(assetId: bigint, shares: bigint): Ledger {
     // Update the current context to be the result of executing the circuit.
     this.circuitContext = this.contract.impureCircuits.mint(
-      this.circuitContext, assetId,
+      this.circuitContext, assetId, shares
     ).context;
     return ledger(this.circuitContext.transactionContext.state);
   }
 
-  public isOwnerOf(assetId: bigint): boolean {
-    const res = this.contract.impureCircuits.isOwnerOf(
+  public assetBalance(assetId: bigint): bigint {
+    const res = this.contract.impureCircuits.assetBalance(
       this.circuitContext, assetId
     );
     this.circuitContext = res.context;
@@ -99,18 +99,19 @@ export class AtaulfoSimulator {
   }
 
   public assetApprove(assetId: bigint, target: Uint8Array): Ledger {
-    this.circuitContext = this.contract.impureCircuits.assetApprove(
+    /*this.circuitContext = this.contract.impureCircuits.assetApprove(
       this.circuitContext, assetId, { is_left: true, left: { bytes: target }, right: { bytes: encodeContractAddress(dummyContractAddress()) } }
-    ).context;
+    ).context;*/
     return ledger(this.circuitContext.transactionContext.state);
   }
 
   public isAssetApproved(assetId: bigint): boolean {
-    const res = this.contract.impureCircuits.isAssetApproved(
+    /*const res = this.contract.impureCircuits.isAssetApproved(
       this.circuitContext, assetId,
     );
     this.circuitContext = res.context;
-    return res.result;
+    return res.result;*/
+    return false;
   }
 
   public setApprovalForAll(operator: Uint8Array, approved: boolean): Ledger {
@@ -128,9 +129,9 @@ export class AtaulfoSimulator {
     return res.result;
   }
 
-  public createOffer(assetId: bigint, price: bigint, meta: string): Uint8Array {
+  public createOffer(assetId: bigint, shares: bigint, min: bigint, price: bigint, meta: string): Uint8Array {
     const res = this.contract.impureCircuits.createOffer(
-      this.circuitContext, assetId, price, meta
+      this.circuitContext, assetId, shares, min, price, meta
     );
     this.circuitContext = res.context;
     return res.result;
@@ -168,9 +169,17 @@ export class AtaulfoSimulator {
     return res.result;
   }
 
-  public fulfillOffer(offerId: Uint8Array): Offer {
+  public treasuryBalance(): bigint {
+    const res = this.contract.impureCircuits.treasuryBalance(
+      this.circuitContext
+    );
+    this.circuitContext = res.context;
+    return res.result;
+  }
+
+  public fulfillOffer(offerId: Uint8Array, shares: bigint): Offer {
     const res = this.contract.impureCircuits.fulfillOffer(
-      this.circuitContext, offerId
+      this.circuitContext, offerId, shares
     );
     this.circuitContext = res.context;
     return res.result;
