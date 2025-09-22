@@ -1,0 +1,173 @@
+module Assets {
+
+  import CompactStandardLibrary;
+
+  // Map of asset IDs to the list of owners and corresponding number of shares.
+  export ledger assetsOwners: Map<Uint<128>, Map<Bytes<32>, Uint<128>>>;
+
+  // Map of assets to the set of approved parties.
+  // We index this list using operator -> assetId+assetOwner.
+  export ledger assetsApprovals: Map<Bytes<32>, Set<Bytes<32>>>;
+
+  // Returns the number of asset shares owned
+  export circuit balance(assetId: Uint<128>, ownership: Bytes<32>): Uint<128> {
+    assert(assetsOwners.member(disclose(assetId)), "Invalid asset ID");
+    if (assetsOwners.lookup(disclose(assetId)).member(disclose(ownership))) {
+      return assetsOwners.lookup(disclose(assetId)).lookup(disclose(ownership));
+    }
+
+    return 0;
+  }
+
+  // Returns whether the caller is the owner or approved party.
+  export circuit isOwnerOrApproved(
+                   from: Either<ZswapCoinPublicKey, ContractAddress>,
+                   assetId: Uint<128>,
+                   ownership: Bytes<32>
+                   ): Boolean {
+    assert(isOwnershipOf(assetId, ownership), "Invalid asset ownership ID");
+    const hiddenOwner = genHiddenOwner(from);
+    if (disclose(ownership) == disclose(genOwnershipId(assetId, hiddenOwner))) {
+      // it's the owner
+      return true;
+    }
+
+    return isApproved(from, assetId, ownership);
+  }
+
+  // Returns the owner of a given token ID
+  export circuit isOwnershipOf(assetId: Uint<128>, ownership: Bytes<32>): Boolean {
+    assert(assetsOwners.member(disclose(assetId)), "Invalid asset ID");
+    return assetsOwners.lookup(disclose(assetId)).member(disclose(ownership));
+  }
+
+  export circuit isApproved(
+                   from: Either<ZswapCoinPublicKey, ContractAddress>,
+                   assetId: Uint<128>,
+                   ownership: Bytes<32>
+                   ): Boolean {
+    assert(assetsOwners.member(disclose(assetId)), "Invalid asset ID");
+    assert(assetsOwners.lookup(disclose(assetId)).member(disclose(ownership)), "Invalid asset ownership ID");
+    const hiddenOwner = genHiddenOwner(from);
+    return assetsApprovals.member(disclose(hiddenOwner)) &&
+           assetsApprovals.lookup(disclose(hiddenOwner)).member(disclose(ownership));
+  }
+
+  // Approves to transfer the specified token ID
+  export circuit setApproval(
+                   assetId: Uint<128>,
+                   ownership: Bytes<32>,
+                   operator: Either<ZswapCoinPublicKey, ContractAddress>,
+                   approved: Boolean
+                   ): [] {
+    // The caller must be the owner or an approved operator
+    assert(isOwnerOrApproved(
+             left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey()), assetId, ownership), "Not authorized.");
+
+    const hiddenParty = disclose(genHiddenOwner(operator));
+    if (!assetsApprovals.member(hiddenParty)) {
+      assetsApprovals.insert(hiddenParty, default<Set<Bytes<32>>>);
+    }
+
+    if (disclose(approved)) {
+       assetsApprovals.lookup(hiddenParty).insert(disclose(ownership));
+    } else {
+       assetsApprovals.lookup(hiddenParty).remove(disclose(ownership));
+    }
+  }
+
+  // Transfers ownership of a given token ID from you to another account
+  export circuit transfer(to: Either<ZswapCoinPublicKey, ContractAddress>,
+                          assetId: Uint<128>,
+                          shares: Uint<128>
+                          ): [] {
+    const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
+    const hiddenOwner = genHiddenOwner(caller);
+    const ownership = genOwnershipId(assetId, hiddenOwner);
+    // The caller must be the owner or an approved operator
+    assert(isOwnerOrApproved(caller, assetId, ownership), "Not authorized.");
+
+    _transferFrom(ownership, to, assetId, shares);
+  }
+
+  // Transfers ownership of a given token ID from one public key to another
+  export circuit _transferFrom(
+                   ownership: Bytes<32>,
+                   to: Either<ZswapCoinPublicKey, ContractAddress>,
+                   assetId: Uint<128>,
+                   shares: Uint<128>
+                   ): [] {
+    const newBalance = removeTokenFrom(ownership, assetId, shares);
+    if (newBalance == 0) {
+      const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
+      setApproval(assetId, ownership, caller, false);
+    }
+
+    const toHiddenOwner = genHiddenOwner(to);
+    addOwnershipTo(toHiddenOwner, assetId, shares);
+  }
+
+  // Mints a new token with the specified token ID to the given public key
+  export circuit mint(owner: Bytes<32>, assetId: Uint<128>, shares: Uint<128>): Bytes<32> {
+    return addOwnershipTo(owner, assetId, shares);
+  }
+
+  // Generate an owner ID based on the owner's secret key.
+  export circuit genHiddenOwner(owner: Either<ZswapCoinPublicKey, ContractAddress>): Bytes<32> {
+    if (owner.is_left) {
+       return disclose(persistentHash<Vector<2, Bytes<32>>>(
+                         [pad(32, "hidden_owner:"), owner.left.bytes]));
+    }
+    else {
+       return disclose(persistentHash<Vector<2, Bytes<32>>>(
+                         [pad(32, "hidden_owner:"), owner.right.bytes]));
+    }
+  }
+
+  // Generate an ID based the assetId and sender's SK.
+  export circuit genOwnershipId(assetId: Uint<128>, owner: Bytes<32>): Bytes<32> {
+    return persistentHash<Vector<3, Bytes<32>>>(
+             [pad(32, "ownership_id:"), assetId as Field as Bytes<32>, owner]);
+  }
+
+  // Adds a asset ownership updating balance
+  circuit addOwnershipTo(owner: Bytes<32>, assetId: Uint<128>, shares: Uint<128>): Bytes<32> {
+    assert(owner != default<Bytes<32>>, "Recipient cannot be empty.");
+    const ownership = genOwnershipId(assetId, owner);
+
+    const dAssetId = disclose(assetId);
+    if (!assetsOwners.member(dAssetId)) {
+      assetsOwners.insert(dAssetId, default<Map<Bytes<32>, Uint<128>>>);
+    }
+
+    if (!assetsOwners.lookup(assetId).member(disclose(ownership))) {
+       assetsOwners.lookup(assetId).insert(disclose(ownership), disclose(shares));
+    }
+    else {
+       const newAmount =
+                     (assetsOwners.lookup(assetId).lookup(disclose(ownership)) + disclose(shares))
+                     as
+                     Uint<128>;
+       assetsOwners.lookup(assetId).insert(disclose(ownership), newAmount);
+    }
+
+    return ownership;
+  }
+
+  // Removes a token from a public key, updating ownership and balance
+  circuit removeTokenFrom(ownership: Bytes<32>, assetId: Uint<128>, shares: Uint<128>): Uint<128> {
+    assert(isOwnershipOf(assetId, ownership), "Invalid owner.");
+    const balance = assetsOwners.lookup(assetId).lookup(ownership);
+    assert(balance >= shares, "Not enough shares of asset for transfer.");
+
+    // Decrement the owner's asset shares
+    if (balance > disclose(shares)) {
+       const newBalance = balance - disclose(shares);
+       assetsOwners.lookup(assetId).insert(ownership, newBalance);
+       return newBalance;
+    } else {
+       assetsOwners.lookup(assetId).remove(ownership);
+       return 0;
+    }
+  }
+}

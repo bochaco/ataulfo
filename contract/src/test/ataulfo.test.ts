@@ -21,7 +21,7 @@ import {
 } from "@midnight-ntwrk/midnight-js-network-id";
 import { describe, it, expect } from "vitest";
 import { randomBytes, randomCoinPublicKeyHex } from "./utils.js";
-import { encodeCoinPublicKey } from "@midnight-ntwrk/compact-runtime";
+import { dummyContractAddress, encodeCoinPublicKey, encodeContractAddress } from "@midnight-ntwrk/compact-runtime";
 import { createCoinInfo, nativeToken } from "@midnight-ntwrk/ledger";
 
 setNetworkId(NetworkId.Undeployed);
@@ -34,7 +34,7 @@ describe("Ataulfo smart contract", () => {
     const ledger0 = simulator0.getLedger();
     expect(ledger0.treasury.value).toEqual(0n);
     expect(ledger0.opsFee).toEqual(1n);
-    const hiddenContractOwner = simulator0.genHiddenOwner();
+    const hiddenContractOwner = simulator0.genHiddenOwner(encodeCoinPublicKey(pk));
     expect(ledger0.contractOwner).toEqual(hiddenContractOwner);
     expect(ledger0.accounts.size()).toEqual(0n);
     expect(ledger0.accountsTotalBalance).toEqual(0n);
@@ -51,24 +51,54 @@ describe("Ataulfo smart contract", () => {
     expect(ledger0.accountsTotalBalance).toEqual(ledger1.accountsTotalBalance);
   });
 
-  it("contract owner can only mint", () => {
+  it("contract owner is the only one allowed to mint", () => {
     const pk = randomCoinPublicKeyHex();
     const simulator = new AtaulfoSimulator(randomBytes(32), pk);
 
     const assetId = 100n;
-    simulator.mint(assetId);
-    expect(() => simulator.mint(assetId))
-      .toThrow("failed assert: NonFungibleToken: Invalid Sender"); // TODO: improve error message...?
-    expect(simulator.isOwnerOf(assetId)).toBe(true);
-    expect(() =>
-      simulator.isOwnerOf(10n),
-    ).toThrow("failed assert: Invalid asset ID");
+    const shares = 10n;
+    const ownership = simulator.mint(assetId, shares);
+    expect(simulator.assetBalance(assetId, ownership)).toEqual(shares);
+    simulator.mint(assetId, shares);
+    expect(simulator.assetBalance(assetId, ownership)).toEqual(2n * shares);
+    expect(() => simulator.assetBalance(10n, ownership))
+      .toThrow("failed assert: Invalid asset ID");
 
     const pk2 = randomCoinPublicKeyHex();
     simulator.switchUser(randomBytes(32), pk2);
-    expect(() => simulator.mint(2n))
+    expect(() => simulator.mint(assetId, 2n))
       .toThrow("failed assert: Only the contract owner can mint new assets");
-    expect(simulator.isOwnerOf(assetId)).toBe(false);
+    expect(simulator.assetBalance(assetId, ownership)).toBe(2n * shares);
+  });
+
+  it("set/unset approval", () => {
+    const pk = randomCoinPublicKeyHex();
+    const pk2 = randomCoinPublicKeyHex();
+    const pwd = randomBytes(32);
+    const pwd2 = randomBytes(32);
+    const simulator = new AtaulfoSimulator(pwd, pk);
+
+    const assetId = 200n;
+    const shares = 1n;
+    const price = 12345n;
+    const meta = toHex(randomBytes(10));
+    const ownership = simulator.mint(assetId, shares);
+    expect(simulator.isApproved(assetId, ownership)).toBe(true);
+    expect(simulator.isApprovedOperator(encodeCoinPublicKey(pk2), assetId, ownership)).toBe(false);
+
+    simulator.setApproval(assetId, ownership, encodeCoinPublicKey(pk2), true);
+
+    simulator.switchUser(pwd2, pk2);
+    expect(simulator.isApproved(assetId, ownership)).toBe(true);
+    expect(simulator.isApprovedOperator(encodeCoinPublicKey(pk), assetId, ownership)).toBe(true);
+
+    simulator.setApproval(assetId, ownership, encodeCoinPublicKey(pk2), false);
+    expect(simulator.isApproved(assetId, ownership)).toBe(false);
+    expect(simulator.isApprovedOperator(encodeCoinPublicKey(pk), assetId, ownership)).toBe(true);
+
+    simulator.switchUser(pwd, pk);
+    expect(simulator.isApproved(assetId, ownership)).toBe(true);
+    expect(simulator.isApprovedOperator(encodeCoinPublicKey(pk), assetId, ownership)).toBe(true);
   });
 
   it("publishing an offer by asset owner", () => {
@@ -80,12 +110,12 @@ describe("Ataulfo smart contract", () => {
     const price = 12345n;
     const meta = toHex(randomBytes(10));
 
-    simulator.mint(assetId);
-    expect(() => simulator.createOffer(assetId, 0n, meta))
+    const ownership = simulator.mint(assetId, 10n);
+    expect(() => simulator.createOffer(assetId, ownership, 1n, 1n, 0n, meta))
       .toThrow("failed assert: Price must be greater than zero");
     expect(simulator.getLedger().offers.isEmpty()).toBe(true);
-    const offerId = simulator.createOffer(assetId, price, meta);
-    expect(offerId).toEqual(simulator.genOfferId(simulator.getPrivateState().secretKey, assetId, price));
+    const offerId = simulator.createOffer(assetId, ownership, 1n, 1n, price, meta);
+    expect(offerId).toEqual(simulator.genOfferId(ownership, price));
 
     const offer = simulator.getLedger().offers.lookup(offerId);
     expect(offer.assetId).toEqual(assetId);
@@ -100,25 +130,25 @@ describe("Ataulfo smart contract", () => {
     const simulator = new AtaulfoSimulator(pwd, pk);
 
     const assetId = 200n;
+    const shares = 1n;
     const price = 12345n;
     const meta = toHex(randomBytes(10));
-    simulator.mint(assetId);
+    const ownership = simulator.mint(assetId, shares);
 
-    // another party cannot create an offer
+    // another party cannot create an offer since it has not balance of this asset
     const pk2 = randomCoinPublicKeyHex();
     const pwd2 = randomBytes(32);
     simulator.switchUser(pwd2, pk2);
-    expect(() => simulator.createOffer(assetId, price, meta))
+    expect(() => simulator.createOffer(assetId, ownership, 1n, 1n, price, meta))
       .toThrow("failed assert: Offer publisher must be the owner or operator of the asset");
     expect(simulator.getLedger().offers.isEmpty()).toBe(true);
 
     // but if the owner approves another party as an operator, it should then be able to create an offer.
-    // TODO: createOffer doesn't allow yet approved on a single asset, only owner and operators for now.
     // In the future we shall also test a party which was approved only for this asset to create offers.
     simulator.switchUser(pwd, pk);
-    simulator.setApprovalForAll(encodeCoinPublicKey(pk2), true);
+    simulator.setApproval(assetId, ownership, encodeCoinPublicKey(pk2), true);
     simulator.switchUser(pwd2, pk2);
-    const offerId = simulator.createOffer(assetId, price, meta);
+    const offerId = simulator.createOffer(assetId, ownership, 1n, 1n, price, meta);
     const ledgerState = simulator.getLedger();
     expect(ledgerState.offers.size()).toEqual(1n);
     expect(ledgerState.offers.lookup(offerId).assetId).toEqual(assetId);
@@ -132,11 +162,12 @@ describe("Ataulfo smart contract", () => {
     const simulator = new AtaulfoSimulator(pwd, pk);
 
     const assetId = 600n;
+    const shares = 1n;
     const meta = toHex(randomBytes(10));
-    simulator.mint(assetId);
+    const ownership = simulator.mint(assetId, shares);
 
-    const offerId1 = simulator.createOffer(assetId, 1000n, meta);
-    const offerId2 = simulator.createOffer(assetId, 2000n, meta);
+    const offerId1 = simulator.createOffer(assetId, ownership, 1n, 1n, 1000n, meta);
+    const offerId2 = simulator.createOffer(assetId, ownership, 1n, 1n, 2000n, meta);
     expect(offerId1 != offerId2).toBe(true);
     let ledgerState = simulator.getLedger();
     expect(ledgerState.offers.size()).toEqual(2n);
@@ -146,7 +177,7 @@ describe("Ataulfo smart contract", () => {
 
     // this will replace previous offer with offerId2 to have a new metadata
     const newMeta = `different-meta-${meta}`;
-    const offerId3 = simulator.createOffer(assetId, 2000n, newMeta);
+    const offerId3 = simulator.createOffer(assetId, ownership, 1n, 1n, 2000n, newMeta);
     expect(offerId1 != offerId3).toBe(true);
     expect(offerId2).toEqual(offerId3);
     ledgerState = simulator.getLedger();
@@ -157,23 +188,24 @@ describe("Ataulfo smart contract", () => {
 
     const pk2 = randomCoinPublicKeyHex();
     const pwd2 = randomBytes(32);
-    simulator.setApprovalForAll(encodeCoinPublicKey(pk2), true);
+    simulator.setApproval(assetId, ownership, encodeCoinPublicKey(pk2), true);
     simulator.switchUser(pwd2, pk2);
-    const offerId4 = simulator.createOffer(assetId, 2000n, newMeta);
+    const offerId4 = simulator.createOffer(assetId, ownership, 1n, 1n, 2000n, newMeta);
     expect(simulator.getLedger().offers.size()).toEqual(3n);
     expect(offerId3 != offerId4).toBe(true);
   });
 
   it("cancelling an offer by publisher", () => {
     const pk = randomCoinPublicKeyHex();
-    const user = randomBytes(32);
-    const simulator = new AtaulfoSimulator(user, pk);
+    const pwd = randomBytes(32);
+    const simulator = new AtaulfoSimulator(pwd, pk);
 
     const assetId = 300n;
+    const shares = 1n;
     const price = 54321n;
     const meta = toHex(randomBytes(10));
-    simulator.mint(assetId);
-    const offerId = simulator.createOffer(assetId, price, meta);
+    const ownership = simulator.mint(assetId, shares);
+    const offerId = simulator.createOffer(assetId, ownership, 1n, 1n, price, meta);
     expect(simulator.getLedger().offers.size()).toBe(1n);
     expect(() => simulator.cancelOffer(randomBytes(32)))
       .toThrow("failed assert: Offer does not exist");
@@ -187,24 +219,26 @@ describe("Ataulfo smart contract", () => {
 
   it("asset owner can always cancel an offer published by operator", () => {
     const pk = randomCoinPublicKeyHex();
-    const user = randomBytes(32);
-    const simulator = new AtaulfoSimulator(user, pk);
+    const pwd = randomBytes(32);
+    const simulator = new AtaulfoSimulator(pwd, pk);
 
     const assetId = 300n;
+    const shares = 1n;
     const price = 54321n;
     const meta = toHex(randomBytes(10));
-    simulator.mint(assetId);
+    const ownership = simulator.mint(assetId, shares);
 
     // another party set as operator can create an offer
     const pk2 = randomCoinPublicKeyHex();
     const pwd2 = randomBytes(32);
-    simulator.setApprovalForAll(encodeCoinPublicKey(pk2), true);
+    simulator.setApproval(assetId, ownership, encodeCoinPublicKey(pk2), true);
 
     simulator.switchUser(pwd2, pk2);
-    const offerId = simulator.createOffer(assetId, price, meta);
+    const offerId = simulator.createOffer(assetId, ownership, 1n, 1n, price, meta);
     expect(simulator.getLedger().offers.size()).toBe(1n);
 
-    simulator.switchUser(user, pk);
+    // owner can always cancel even if it's not publisher
+    simulator.switchUser(pwd, pk);
     const offer = simulator.cancelOffer(offerId);
     expect(offer.assetId).toEqual(assetId);
     expect(offer.price).toEqual(price);
@@ -214,8 +248,8 @@ describe("Ataulfo smart contract", () => {
 
   it("deposit funds", () => {
     const pk = randomCoinPublicKeyHex();
-    const user = randomBytes(32);
-    const simulator = new AtaulfoSimulator(user, pk);
+    const pwd = randomBytes(32);
+    const simulator = new AtaulfoSimulator(pwd, pk);
     const opsFee = simulator.getLedger().opsFee;
     const amount = 400n;
 
@@ -238,7 +272,7 @@ describe("Ataulfo smart contract", () => {
     expect(ledgerState.treasury.value).toEqual(amount);
     expect(ledgerState.accounts.size()).toEqual(1n);
     expect(ledgerState.accountsTotalBalance).toEqual(amount - opsFee);
-    const balanceOwner = simulator.genHiddenOwner();
+    const balanceOwner = simulator.genHiddenOwner(encodeCoinPublicKey(pk));
     expect(ledgerState.accounts.lookup(balanceOwner)).toEqual(amount - opsFee);
     expect(simulator.balance()).toEqual(amount - opsFee);
 
@@ -258,8 +292,8 @@ describe("Ataulfo smart contract", () => {
 
   it("withdraw funds", () => {
     const pk = randomCoinPublicKeyHex();
-    const user = randomBytes(32);
-    const simulator = new AtaulfoSimulator(user, pk);
+    const pwd = randomBytes(32);
+    const simulator = new AtaulfoSimulator(pwd, pk);
     const opsFee = simulator.getLedger().opsFee;
     const amount = 4000n;
 
@@ -274,12 +308,13 @@ describe("Ataulfo smart contract", () => {
     expect(ledgerState.treasury.value).toEqual(amount);
     expect(ledgerState.accounts.size()).toEqual(1n);
     expect(ledgerState.accountsTotalBalance).toEqual(amount - opsFee);
-    const balanceOwner = simulator.genHiddenOwner();
+    const balanceOwner = simulator.genHiddenOwner(encodeCoinPublicKey(pk));
     expect(ledgerState.accounts.lookup(balanceOwner)).toEqual(amount - opsFee);
     expect(simulator.balance()).toEqual(amount - opsFee);
 
     const withdrawalAmount = 250n;
-    const newBalance = amount - withdrawalAmount - (2n * opsFee);
+    const expectedCollectedFees = 2n * opsFee;
+    const newBalance = amount - withdrawalAmount - expectedCollectedFees;
     const updatedBalance = simulator.withdrawFunds(withdrawalAmount);
     expect(updatedBalance).toEqual(newBalance);
     ledgerState = simulator.getLedger();
@@ -308,19 +343,23 @@ describe("Ataulfo smart contract", () => {
     const opsFee = simulator.getLedger().opsFee;
 
     const assetId = 1200n;
+    const shares = 12n;
+    const shares_bought = 7n;
     const price = 100n;
     const meta = toHex(randomBytes(10));
-    simulator.mint(assetId);
+    const ownership = simulator.mint(assetId, shares);
+    expect(simulator.myAssetBalance(assetId)).toBe(shares);
 
-    const offerId = simulator.createOffer(assetId, price, meta);
+    const offerId = simulator.createOffer(assetId, ownership, shares, 1n, price, meta);
     expect(simulator.getLedger().offers.member(offerId)).toBe(true);
-    expect(() => simulator.fulfillOffer(offerId))
+    expect(() => simulator.fulfillOffer(offerId, 1n))
       .toThrow("failed assert: Offer cannot be fulfilled by the publisher");
 
     const pk2 = randomCoinPublicKeyHex();
     const pwd2 = randomBytes(32);
     simulator.switchUser(pwd2, pk2);
-    expect(() => simulator.fulfillOffer(offerId))
+    expect(simulator.myAssetBalance(assetId)).toBe(0n);
+    expect(() => simulator.fulfillOffer(offerId, shares_bought))
       .toThrow("failed assert: No balance deposited to fulfill the offer and operation fee");
 
     // we'll need a balance of: price + 2*opsFee to fulfill it, since we pay for depositing and for fulfilling it
@@ -329,10 +368,10 @@ describe("Ataulfo smart contract", () => {
     simulator.depositFunds(coinInfo);
     expect(simulator.balance()).toBe(initialAmount - opsFee);
     expect(simulator.getLedger().treasury.value).toBe(initialAmount);
-    expect(() => simulator.fulfillOffer(offerId))
+    expect(() => simulator.fulfillOffer(offerId, shares_bought))
       .toThrow("failed assert: Insufficient balance to fulfill the offer and operation fee");
     const invalidOfferId = randomBytes(32);
-    expect(() => simulator.fulfillOffer(invalidOfferId))
+    expect(() => simulator.fulfillOffer(invalidOfferId, shares_bought))
       .toThrow("failed assert: Offer does not exist");
 
     const topUpAmount = 2n * opsFee;
@@ -341,7 +380,7 @@ describe("Ataulfo smart contract", () => {
     expect(simulator.balance()).toBe(initialAmount + topUpAmount - 2n * opsFee);
     expect(simulator.getLedger().treasury.value).toEqual(initialAmount + topUpAmount);
 
-    const offer = simulator.fulfillOffer(offerId);
+    const offer = simulator.fulfillOffer(offerId, shares_bought);
     const ledgerState = simulator.getLedger();
     expect(ledgerState.offers.isEmpty()).toBe(true);
     expect(ledgerState.offers.member(offerId)).toBe(false);
@@ -350,15 +389,19 @@ describe("Ataulfo smart contract", () => {
     expect(offer.meta).toEqual(meta);
     expect(simulator.balance()).toBe(initialAmount + topUpAmount - price - 3n * opsFee);
     expect(simulator.getLedger().treasury.value).toEqual(initialAmount + topUpAmount - price);
+    expect(simulator.myAssetBalance(assetId)).toBe(shares_bought);
 
-    expect(() => simulator.fulfillOffer(offerId))
+    expect(() => simulator.fulfillOffer(offerId, 1n))
       .toThrow("failed assert: Offer does not exist");
+
+    simulator.switchUser(pwd, pk);
+    expect(simulator.myAssetBalance(assetId)).toBe(shares - shares_bought);
   });
 
   it("withdraw collected fees", () => {
     const pk = randomCoinPublicKeyHex();
-    const user = randomBytes(32);
-    const simulator = new AtaulfoSimulator(user, pk);
+    const pwd = randomBytes(32);
+    const simulator = new AtaulfoSimulator(pwd, pk);
     const opsFee = simulator.getLedger().opsFee;
     const amount = 2500n;
 
@@ -367,7 +410,6 @@ describe("Ataulfo smart contract", () => {
 
     let coinInfo = createCoinInfo(nativeToken(), amount);
     simulator.depositFunds(coinInfo);
-    const balanceOwner = simulator.genHiddenOwner();
 
     const expectedCollectedFees = 2n * opsFee;
     const withdrawalAmount = amount - expectedCollectedFees;
