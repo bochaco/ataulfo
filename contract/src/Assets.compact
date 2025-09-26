@@ -1,0 +1,184 @@
+module Assets {
+
+  import CompactStandardLibrary;
+
+  // Maps asset IDs to a map of holding IDs and their corresponding share counts.
+  // Each holdingId represents a unique owner (public key or contract) for an asset.
+  export ledger assetHoldings: Map<Uint<128>, Map<Bytes<32>, Uint<128>>>;
+
+  // Maps operator IDs to sets of holding IDs they are approved to manage.
+  // Operators can transfer shares and manage other operators for these holdings.
+  export ledger approvals: Map<Bytes<32>, Set<Bytes<32>>>;
+
+  // Returns the number of shares owned for a given asset and holding ID.
+  export circuit balance(assetId: Uint<128>, holdingId: Bytes<32>): Uint<128> {
+    assert(assetHoldings.member(disclose(assetId)), "Invalid asset ID");
+    if (assetHoldings.lookup(disclose(assetId)).member(disclose(holdingId))) {
+      return assetHoldings.lookup(disclose(assetId)).lookup(disclose(holdingId));
+    }
+
+    return 0;
+  }
+
+  // Checks if the caller is the owner of the holding or an approved operator.
+  export circuit isOwnerOrApproved(
+                   from: Either<ZswapCoinPublicKey, ContractAddress>,
+                   assetId: Uint<128>,
+                   holdingId: Bytes<32>
+                   ): Boolean {
+    assert(holdingExists(assetId, holdingId), "Invalid asset holding ID");
+    const hiddenOwner = genHiddenOwner(from);
+    if (disclose(holdingId) == disclose(genHoldingId(assetId, hiddenOwner))) {
+      // Caller is the owner
+      return true;
+    }
+
+    return isApproved(from, assetId, holdingId);
+  }
+
+  // Checks if a holding ID exists for a given asset ID.
+  export circuit holdingExists(assetId: Uint<128>, holdingId: Bytes<32>): Boolean {
+    assert(assetHoldings.member(disclose(assetId)), "Invalid asset ID");
+    return assetHoldings.lookup(disclose(assetId)).member(disclose(holdingId));
+  }
+
+  // Checks if the given party is approved to manage the specified holding ID.
+  export circuit isApproved(
+                   from: Either<ZswapCoinPublicKey, ContractAddress>,
+                   assetId: Uint<128>,
+                   holdingId: Bytes<32>
+                   ): Boolean {
+    assert(assetHoldings.member(disclose(assetId)), "Invalid asset ID");
+    assert(assetHoldings.lookup(disclose(assetId)).member(disclose(holdingId)), "Invalid asset holdingId ID");
+    const hiddenOwner = genHiddenOwner(from);
+    return approvals.member(disclose(hiddenOwner)) &&
+           approvals.lookup(disclose(hiddenOwner)).member(disclose(holdingId));
+  }
+
+  // Approves or revokes an operator for a specific holding ID.
+  // Only the owner or an approved operator can call this.
+  export circuit setApproval(
+                   assetId: Uint<128>,
+                   holdingId: Bytes<32>,
+                   operator: Either<ZswapCoinPublicKey, ContractAddress>,
+                   approved: Boolean
+                   ): [] {
+    // The caller must be the owner or an approved operator
+    assert(isOwnerOrApproved(
+             left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey()), assetId, holdingId), "Not authorized.");
+
+    const hiddenParty = disclose(genHiddenOwner(operator));
+    if (!approvals.member(hiddenParty)) {
+      approvals.insert(hiddenParty, default<Set<Bytes<32>>>);
+    }
+
+    if (disclose(approved)) {
+       approvals.lookup(hiddenParty).insert(disclose(holdingId));
+    } else {
+       approvals.lookup(hiddenParty).remove(disclose(holdingId));
+    }
+  }
+
+  // Transfers shares of an asset from the caller to another account.
+  // Only the owner or an approved operator can call this.
+  export circuit transfer(to: Either<ZswapCoinPublicKey, ContractAddress>,
+                          assetId: Uint<128>,
+                          shares: Uint<128>
+                          ): [] {
+    const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
+    const hiddenOwner = genHiddenOwner(caller);
+    const holdingId = genHoldingId(assetId, hiddenOwner);
+    // The caller must be the owner or an approved operator
+    assert(isOwnerOrApproved(caller, assetId, holdingId), "Not authorized.");
+
+    _transferFrom(holdingId, to, assetId, shares);
+  }
+
+  // Internal: Transfers shares from a specific holding ID to another owner.
+  // Removes shares from the source and adds them to the destination.
+  export circuit _transferFrom(
+                   holdingId: Bytes<32>,
+                   to: Either<ZswapCoinPublicKey, ContractAddress>,
+                   assetId: Uint<128>,
+                   shares: Uint<128>
+                   ): [] {
+    const newBalance = removeHoldingFrom(holdingId, assetId, shares);
+    if (newBalance == 0) {
+      const caller = left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey());
+      const hiddenParty = disclose(genHiddenOwner(caller));
+      if (approvals.member(hiddenParty) && approvals.lookup(hiddenParty).member(holdingId)) {
+        approvals.lookup(hiddenParty).remove(disclose(holdingId));
+      }
+    }
+
+    const toHiddenOwner = genHiddenOwner(to);
+    addHoldingTo(toHiddenOwner, assetId, shares);
+  }
+
+  // Mints new shares of an asset to the specified owner.
+  // Returns the holding ID for the new ownership.
+  export circuit mint(owner: Bytes<32>, assetId: Uint<128>, shares: Uint<128>): Bytes<32> {
+    return addHoldingTo(owner, assetId, shares);
+  }
+
+  // Generates a hidden owner ID from a public key or contract address.
+  export circuit genHiddenOwner(owner: Either<ZswapCoinPublicKey, ContractAddress>): Bytes<32> {
+    if (owner.is_left) {
+       return disclose(persistentHash<Vector<2, Bytes<32>>>(
+                         [pad(32, "hidden_owner:"), owner.left.bytes]));
+    }
+    else {
+       return disclose(persistentHash<Vector<2, Bytes<32>>>(
+                         [pad(32, "hidden_owner:"), owner.right.bytes]));
+    }
+  }
+
+  // Generates a holding ID from asset ID and owner ID.
+  export circuit genHoldingId(assetId: Uint<128>, owner: Bytes<32>): Bytes<32> {
+    return persistentHash<Vector<3, Bytes<32>>>(
+             [pad(32, "holding_id:"), assetId as Field as Bytes<32>, owner]);
+  }
+
+  // Adds shares to an owner's holding for a given asset.
+  // Creates the holding if it does not exist.
+  circuit addHoldingTo(owner: Bytes<32>, assetId: Uint<128>, shares: Uint<128>): Bytes<32> {
+    assert(owner != default<Bytes<32>>, "Recipient cannot be empty.");
+    const holdingId = genHoldingId(assetId, owner);
+
+    const dAssetId = disclose(assetId);
+    if (!assetHoldings.member(dAssetId)) {
+      assetHoldings.insert(dAssetId, default<Map<Bytes<32>, Uint<128>>>);
+    }
+
+    if (!assetHoldings.lookup(assetId).member(disclose(holdingId))) {
+       assetHoldings.lookup(assetId).insert(disclose(holdingId), disclose(shares));
+    }
+    else {
+       const newAmount =
+                     (assetHoldings.lookup(assetId).lookup(disclose(holdingId)) + disclose(shares))
+                     as
+                     Uint<128>;
+       assetHoldings.lookup(assetId).insert(disclose(holdingId), newAmount);
+    }
+
+    return holdingId;
+  }
+
+  // Removes shares from an owner's holding for a given asset.
+  // Deletes the holding if all shares are removed.
+  circuit removeHoldingFrom(holdingId: Bytes<32>, assetId: Uint<128>, shares: Uint<128>): Uint<128> {
+    assert(holdingExists(assetId, holdingId), "Invalid owner.");
+    const balance = assetHoldings.lookup(assetId).lookup(holdingId);
+    assert(balance >= shares, "Not enough shares of asset for transfer.");
+
+    // Decrement the owner's asset shares
+    if (balance > disclose(shares)) {
+       const newBalance = balance - disclose(shares);
+       assetHoldings.lookup(assetId).insert(holdingId, newBalance);
+       return newBalance;
+    } else {
+       assetHoldings.lookup(assetId).remove(holdingId);
+       return 0;
+    }
+  }
+}

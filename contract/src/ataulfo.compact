@@ -2,10 +2,14 @@ pragma language_version >= 0.16 && <= 0.17;
 
 import CompactStandardLibrary;
 
-import NonFungibleToken prefix NonFungibleToken_;
+import Assets prefix Assets_;
+
+// Asset holders and their corresponding balances.
+//export { Assets_assetHoldings };
 
 // Contract's own treasury of native tokens.
 export ledger treasury: QualifiedCoinInfo;
+
 // Flag to keep track whether there are coins stored on the treasury.
 // Is there a better way so this flag is not needed???
 ledger treasuryWithCoins: Boolean;
@@ -20,10 +24,16 @@ export sealed ledger contractOwner: Bytes<32>;
 export struct Offer {
   // Owner of the offered asset where payment will be sent.
   assetOwner: Either<ZswapCoinPublicKey, ContractAddress>;
-  // TokenId of the asset offered.
+  // Id of the asset offered.
   assetId: Uint<128>;
-  // Price in native tokens for each unit of the offered asset/s.
+  // Holding ID
+  holdingId: Bytes<32>;
+  // Price in native tokens for each unit/share of the offered asset.
   price: Uint<128>;
+  // Number of shares on sale in this offer.
+  shares: Uint<128>;
+  // Minimum amount of shares on sale in this offer.
+  minShares: Uint<128>;
   // Optional metadata for the asset, format and content to be interpreted by the dApp.
   meta: Opaque<'string'>;
 }
@@ -40,10 +50,15 @@ export ledger offers: Map<Bytes<32>, Offer>;
 // Witness for the local secret key used to manage deposited funds.
 witness localSecretKey(): Bytes<32>;
 
-constructor(name: Opaque<"string">, symbol: Opaque<"string">, fee: Uint<128>) {
-  NonFungibleToken_initialize(name, symbol);
+/**
+  * @description Initializes the contract by setting the base URI for all assets.
+  *
+  * @param {Opaque<"string">} uri - The base URI for all assets URIs.
+  * @param {Uint<128>} fee - The fee to charge for each operation requested by the users to be collected by the cowner.
+  */
+constructor(uri: Opaque<"string">, fee: Uint<128>) {
   opsFee = disclose(fee);
-  contractOwner = disclose(genHiddenOwner(localSecretKey()));
+  contractOwner = disclose(genHiddenOwner(getTxSender()));
   treasuryWithCoins = false;
 }
 
@@ -54,32 +69,35 @@ constructor(name: Opaque<"string">, symbol: Opaque<"string">, fee: Uint<128>) {
   *
   * - The contract is initialized.
   * - The caller is the contract owner.
-  * - The assetId is not already minted.
   *
-  * @return {[]} - Empty tuple.
+  * @param {Uint<128>} id - The unique identifier for the asset.
+  * @param {Uint<128>} value - The quantity of assets of this same type that are minted.
+  * @return {Bytes<32>} - Holding ID.
   */
-export circuit mint(assetId: Uint<128>): [] {
-  assert(contractOwner == genHiddenOwner(localSecretKey()), "Only the contract owner can mint new assets");
-  const txSender = getTxSender();
-  NonFungibleToken__mint(txSender, assetId);
-
-  return [];
+export circuit mint(assetId: Uint<128>, shares: Uint<128>): Bytes<32> {
+  assert(contractOwner == genHiddenOwner(getTxSender()), "Only the contract owner can mint new assets");
+  return Assets_mint(contractOwner, assetId, shares);
 }
 
 /**
- * @description Returns whether the caller is owner of the `assetId`.
+ * @description Returns the balance (amount of shares) the caller owns for assets of type `assetId`.
  *
  * Requirements:
  *
  * - The contract is initialized.
+ * - The asset exists.
  *
- * @param {Uint<128>} assetId - The target asset of the owner query.
- * @return {Boolean} - Whether the caller is the owner of the asset.
+ * @param {Uint<128>} assetId - The target asset of the balance query.
+ * @return {Uint<128>} balance - Amount of shares the caller owns.
  */
-export circuit isOwnerOf(assetId: Uint<128>): Boolean {
-  const assetOwner = NonFungibleToken__ownerOf(assetId);
-  assert(assetOwner != burnAddress(), "Invalid asset ID");
-  return assetOwner == getTxSender();
+export circuit assetBalance(assetId: Uint<128>, holdingId: Bytes<32>): Uint<128> {
+  return Assets_balance(assetId, holdingId);
+}
+
+export circuit myAssetBalance(assetId: Uint<128>): Uint<128> {
+  const hiddenOwner = genHiddenOwner(getTxSender());
+  const holdingId = Assets_genHoldingId(assetId, hiddenOwner);
+  return Assets_balance(assetId, holdingId);
 }
 
 /**
@@ -93,8 +111,13 @@ export circuit isOwnerOf(assetId: Uint<128>): Boolean {
  * @param {Either<ZswapCoinPublicKey, ContractAddress>} target - Who is given transfer approval.
  * @return {[]} - Empty tuple.
  */
-export circuit assetApprove(assetId: Uint<128>, target: Either<ZswapCoinPublicKey, ContractAddress>): [] {
-  NonFungibleToken_approve(target, assetId);
+export circuit setApproval(
+                 assetId: Uint<128>,
+                 holdingId: Bytes<32>,
+                 target: Either<ZswapCoinPublicKey, ContractAddress>,
+                 approved: Boolean
+                 ): [] {
+  Assets_setApproval(assetId, holdingId, target, approved);
 }
 
 /**
@@ -105,12 +128,19 @@ export circuit assetApprove(assetId: Uint<128>, target: Either<ZswapCoinPublicKe
  * - The contract is initialized.
  *
  * @param {Uint<128>} assetId - The target asset to check approval.
+ * @param {Either<ZswapCoinPublicKey, ContractAddress>} owner - Owner of the asset.
  * @return {Boolean} - Whether the caller is approved.
  */
-export circuit isAssetApproved(assetId: Uint<128>): Boolean {
-  const approved = NonFungibleToken_getApproved(assetId);
-  assert(approved != burnAddress(), "Invalid asset ID");
-  return approved == getTxSender();
+export circuit isApproved(assetId: Uint<128>, holdingId: Bytes<32>): Boolean {
+  return Assets_isOwnerOrApproved(getTxSender(), assetId, holdingId);
+}
+
+export circuit isApprovedOperator(
+                 operator: Either<ZswapCoinPublicKey, ContractAddress>,
+                 assetId: Uint<128>,
+                 holdingId: Bytes<32>
+                 ): Boolean {
+  return Assets_isOwnerOrApproved(operator, assetId, holdingId);
 }
 
 /**
@@ -126,9 +156,8 @@ export circuit isAssetApproved(assetId: Uint<128>): Boolean {
  * @param {Boolean} approved - A boolean determining if `operator` may manage all tokens of the caller
  * @return {[]} - Empty tuple.
  */
-export circuit setApprovalForAll(
-                 operator: Either<ZswapCoinPublicKey, ContractAddress>, approved: Boolean): [] {
-  NonFungibleToken_setApprovalForAll(operator, approved);
+export circuit setApprovalForAll(operator: ZswapCoinPublicKey, approved: Boolean): [] {
+  //Assets_setApprovalForAll(operator, approved);
   return [];
 }
 
@@ -144,7 +173,7 @@ export circuit setApprovalForAll(
   * @return {Uint<128>} - Balance withdrawn.
   */
 export circuit withdrawCollectedFees(): Uint<128> {
-  assert(contractOwner == genHiddenOwner(localSecretKey()), "Only the contract owner can withdraw collected fees");
+  assert(contractOwner == genHiddenOwner(getTxSender()), "Only the contract owner can withdraw collected fees");
 
   // keep just enough funds to back accounts deposits
   const collectedFeesBalance = treasury.value - accountsTotalBalance;
@@ -171,34 +200,50 @@ export circuit withdrawCollectedFees(): Uint<128> {
   * - The contract is initialized.
   * - The price is greater than zero.
   * - The caller is the owner or operator of the asset to be published.
+  * - The owner or operator owns at least the number of offered shares.
+  * - The number of offered shares is greater or equal to the minimum set in the offer.
+  * - The minimum of shares to fullfil the offer s greater than zero.
   *
   * @param {Uint<128>} assetId - Id of the asset the offer is for
+  * @param {Uint<128>} shares - Number of shares on sale in this offer
+  * @param {Uint<128>} min - Minimum amount of shares on sale in this offer,
   * @param {Uint<128>} price - Price of the asset in this offer
   * @param {Opaque<'string'>} meta - Metadata for the asset in this offer
   * @return {Bytes<32>} - The ID of the created offer.
   */
-export circuit createOffer(assetId: Uint<128>, price: Uint<128>, meta: Opaque<'string'>): Bytes<32> {
+export circuit createOffer(
+                 assetId: Uint<128>,
+                 holdingId: Bytes<32>,
+                 shares: Uint<128>,
+                 minShares: Uint<128>,
+                 price: Uint<128>,
+                 meta: Opaque<'string'>
+                 ): Bytes<32> {
   assert(price > 0, "Price must be greater than zero");
+  assert(minShares > 0, "Minimum of shares must be greater than zero");
+  assert(shares >= minShares, "Number of shares must greater or equal to the minimum amount");
 
+  const ownedBalance = assetBalance(assetId, holdingId);
+  assert(ownedBalance >= shares, "Not enough asset shares owned to create the offer");
   const publisher = getTxSender();
-  const owner = NonFungibleToken_ownerOf(assetId);
-  // TODO: also an approved party should be able to create the offer.
-  // We cannot do this untill transfers to contract are supported.
-  assert((publisher == owner || NonFungibleToken_isApprovedForAll(owner, publisher)), "Offer publisher must be the owner or operator of the asset");
+  assert(Assets_isOwnerOrApproved(publisher, assetId, holdingId), "Offer publisher must be the owner or operator of the asset");
 
-  // WORKAROUND: transfers to contract are not yet supported so tokens will be locked in them.
-  //NonFungibleToken_transferFrom(publisher, me, assetId);
-  // We temporarily just approve the contract for transfer
+  // We just approve the contract for transfer
   const me = myAddr();
-  NonFungibleToken_approve(me, assetId);
-  assert(NonFungibleToken_getApproved(assetId) == me, "Asset must be approved for the contract to be transfered");
-  // END WORKAROUND
-
-  const offer = Offer { assetOwner: publisher, assetId: assetId, price: price, meta: meta };
+  Assets_setApproval(assetId, holdingId, me, true);
+  assert(Assets_isApproved(me, assetId, holdingId), "Asset must be approved for the contract to be transfered");
+  const offer = Offer { assetOwner: publisher,
+                        assetId: assetId,
+                        holdingId: holdingId,
+                        price: price,
+                        shares: shares,
+                        minShares: minShares,
+                        meta: meta };
 
   // insert offer in the offers map
-  const offerId = disclose(genOfferId(localSecretKey(), assetId, price));
+  const offerId = disclose(genOfferId(localSecretKey(), holdingId, price));
   offers.insert(offerId, disclose(offer));
+
   return offerId;
 }
 
@@ -218,15 +263,12 @@ export circuit cancelOffer(offerId: Bytes<32>): Offer {
   assert(offers.member(disclose(offerId)), "Offer does not exist");
   const offer = offers.lookup(disclose(offerId));
   const txSender = getTxSender();
-  const owner = NonFungibleToken_ownerOf(offer.assetId);
-  const isPublisher = (offerId == genOfferId(localSecretKey(), offer.assetId, offer.price));
-  assert((isPublisher || owner == txSender), "Offer can be cancelled by the publisher or asset owner");
+  const isPublisher =
+                (disclose(offerId) == genOfferId(localSecretKey(), offer.holdingId, offer.price));
+  assert(isPublisher || Assets_isOwnerOrApproved(txSender, offer.assetId, offer.holdingId), "Offer can be cancelled by the publisher, asset owner, or approved party");
 
-  // TODO transfer the asset back to the owner of the asset,
-  // for now we are only approving the contract for transfer so no need to transfer back
-  //const me = myAddr();
-  //NonFungibleToken_transferFrom(me, txSender, offer.assetId);
-  // END TODO
+  const me = myAddr();
+  setApproval(offer.assetId, offer.holdingId, me, false);
 
   // remove the offer
   offers.remove(disclose(offerId));
@@ -264,7 +306,7 @@ export circuit depositFunds(coinInfo: CoinInfo): [Uint<128>, Uint<128>] {
   const netAmount = (coinInfo.value - opsFee) as Uint<128>;
   accountsTotalBalance = (accountsTotalBalance + disclose(netAmount)) as Uint<128>;
 
-  const balanceOwner = genHiddenOwner(localSecretKey());
+  const balanceOwner = genHiddenOwner(getTxSender());
   if (accounts.member(disclose(balanceOwner))) {
      const balance = accounts.lookup(disclose(balanceOwner));
      const updatedBalance = (balance + netAmount) as Uint<128>;
@@ -290,7 +332,7 @@ export circuit depositFunds(coinInfo: CoinInfo): [Uint<128>, Uint<128>] {
   */
 export circuit withdrawFunds(amount: Uint<128>): Uint<128> {
   assert(amount > opsFee, "Withdraw amount must be greater than the operations fee");
-  const balanceOwner = genHiddenOwner(localSecretKey());
+  const balanceOwner = genHiddenOwner(getTxSender());
   assert(accounts.member(disclose(balanceOwner)), "No balance deposited to withdraw");
   const balance = accounts.lookup(disclose(balanceOwner));
   const grossAmount = (amount + opsFee) as Uint<128>;
@@ -329,12 +371,25 @@ export circuit withdrawFunds(amount: Uint<128>): Uint<128> {
   * @return {Uint<128>} - Current balance.
   */
 export circuit balance(): Uint<128> {
-  const balanceOwner = genHiddenOwner(localSecretKey());
+  const balanceOwner = genHiddenOwner(getTxSender());
   if (accounts.member(disclose(balanceOwner))) {
      return accounts.lookup(disclose(balanceOwner));
   } else {
      return 0;
   }
+}
+
+/**
+  * @description Return the current treasury balance.
+  *
+  * Requirements:
+  *
+  * - The contract is initialized.
+  *
+  * @return {Uint<128>} - Current treasury balance.
+  */
+export circuit treasuryBalance(): Uint<128> {
+  return treasury.value;
 }
 
 /**
@@ -348,33 +403,36 @@ export circuit balance(): Uint<128> {
   * - The caller has sufficient deposited balance to cover the price of the offer and operation fee.
   *
   * @param {Bytes<32>} offerId - Id of the offer to fulfill.
+  * @param {Uint<128>} shares - Amount of asset shares to buy.
   * @return {Offer} - The offer just fulfilled.
   */
-export circuit fulfillOffer(offerId: Bytes<32>): Offer {
+export circuit fulfillOffer(offerId: Bytes<32>, shares: Uint<128>): Offer {
   assert(offers.member(disclose(offerId)), "Offer does not exist");
   const offer = offers.lookup(disclose(offerId));
+  assert(shares <= offer.shares, "Amonut of shares is greater than available in this offer");
+  assert(shares >= offer.minShares, "Amonut of shares is less than minimum required by offer");
   const me = myAddr();
-  // WORKAROUND: Check if the asset is still approved for transfer
-  const owner = NonFungibleToken_ownerOf(offer.assetId);
-  const isAssetStillApproved =
-                (NonFungibleToken_getApproved(offer.assetId) == me ||
-                 NonFungibleToken_isApprovedForAll(owner, me));
+
+  // Check if the asset is still approved for transfer
+  const isAssetStillApproved = Assets_isApproved(me, offer.assetId, offer.holdingId);
   if (!isAssetStillApproved) {
     offers.remove(disclose(offerId));
     assert(isAssetStillApproved, "The offer has been revoked by the owner");
   }
-  // END WORKAROUND
-  const isPublisher = (offerId == genOfferId(localSecretKey(), offer.assetId, offer.price));
+
+  const isPublisher = (offerId == genOfferId(localSecretKey(), offer.holdingId, offer.price));
   assert(!isPublisher, "Offer cannot be fulfilled by the publisher");
-  const balanceOwner = genHiddenOwner(localSecretKey());
+  const balanceOwner = genHiddenOwner(getTxSender());
   assert(accounts.member(disclose(balanceOwner)), "No balance deposited to fulfill the offer and operation fee");
   const buyerBalance = accounts.lookup(disclose(balanceOwner));
-  const grossPrice = offer.price + opsFee;
-  assert(buyerBalance >= grossPrice, "Insufficient balance to fulfill the offer and operation fee");
+
+  // TODO: prevent from overflowing
+  const grossPrice = ((offer.price as Field) * disclose(shares)) + opsFee;
+  assert(buyerBalance >= grossPrice as Uint<128>, "Insufficient balance to fulfill the offer and operation fee");
 
   // transfer the asset to the buyer
   const buyer = getTxSender();
-  NonFungibleToken_transferFrom(offer.assetOwner, buyer, offer.assetId);
+  Assets__transferFrom(offer.holdingId, buyer, offer.assetId, shares);
 
   // send the tDUST payment to the publisher
   const sendResult = send(treasury, offer.assetOwner, disclose(offer.price));
@@ -395,8 +453,24 @@ export circuit fulfillOffer(offerId: Bytes<32>): Offer {
   }
   accountsTotalBalance = (accountsTotalBalance - disclose(grossPrice)) as Uint<128>;
 
-  // remove the offer
-  offers.remove(disclose(offerId));
+  // remove offer only if remaining shares are less than minimum required 
+  // by the offer, otherwise update the offer keeping remaining shares as offered
+  const remainingShares = disclose(offer.shares - shares);
+  if (remainingShares < offer.minShares) {
+     offers.remove(disclose(offerId));
+  }
+  else {
+     const updatedOffer =
+                   Offer { assetOwner: offer.assetOwner,
+                           assetId: offer.assetId,
+                           holdingId: offer.holdingId,
+                           price: offer.price,
+                           shares: remainingShares,
+                           minShares: offer.minShares,
+                           meta: offer.meta };
+
+     offers.insert(disclose(offerId), updatedOffer);
+  }
 
   return offer;
 }
@@ -413,17 +487,14 @@ circuit myAddr(): Either<ZswapCoinPublicKey, ContractAddress> {
 
 // Generate a unique offer ID based on the publisher, asset ID, and price.
 // We include the publisher in the ID to support different operators offering the same asset.
-export circuit genOfferId(publisher: Bytes<32>, assetId: Uint<128>, price: Uint<128>): Bytes<32> {
-  return persistentHash<Vector<4, Bytes<32>>>(
-           [pad(32, "ataulfo_offer_id:"),
-            publisher,
-            assetId as Field as Bytes<32>,
-            price as Field as Bytes<32>])
+export circuit genOfferId(publisher: Bytes<32>, holdingId: Bytes<32>, price: Uint<128>): Bytes<32> {
+  return disclose(persistentHash<Vector<4, Bytes<32>>>(
+                    [pad(32, "offer_id:"), publisher, holdingId, price as Field as Bytes<32>]))
          as
          Bytes<32>;
 }
 
 // Generate an owner ID based on the owner's secret key.
-export circuit genHiddenOwner(sk: Bytes<32>): Bytes<32> {
-  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "ataulfo_hidden_owner:"), sk]) as Bytes<32>;
+export circuit genHiddenOwner(pk: Either<ZswapCoinPublicKey, ContractAddress>): Bytes<32> {
+  return Assets_genHiddenOwner(pk);
 }

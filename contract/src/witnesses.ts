@@ -35,10 +35,10 @@ export type AtaulfoPrivateState = {
 
 export const createAtaulfoPrivateState = async (secretKey: Uint8Array) => {
   // Generate the SHA-256 hash, the contract expect it to be 32 bytes long.
-  const input: ArrayBuffer = secretKey.slice().buffer;
-  const hashBuffer = await crypto.subtle.digest('SHA-256', input);
+  const skInput: ArrayBuffer = secretKey.slice().buffer;
+  const skHashBuffer = await crypto.subtle.digest('SHA-256', skInput);
   return ({
-    secretKey: new Uint8Array(hashBuffer)
+    secretKey: new Uint8Array(skHashBuffer),
   });
 };
 
@@ -75,5 +75,5 @@ export const witnesses = {
   }: WitnessContext<Ledger, AtaulfoPrivateState>): [
       AtaulfoPrivateState,
       Uint8Array,
-    ] => [privateState, privateState.secretKey],
+    ] => [privateState, privateState.secretKey]
 };
