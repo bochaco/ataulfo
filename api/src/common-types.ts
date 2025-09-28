@@ -83,6 +83,7 @@ export type DeployedAtaulfoContract = FoundContract<AtaulfoContract>;
 export type AtaulfoDerivedState = {
   readonly offers: Map<string, [Offer, boolean]>;
   readonly accounts: Map<string, bigint>;
+  readonly myAssetHoldings: Map<bigint, [string, bigint]>;
   readonly opsFee: bigint;
   readonly treasuryBalance: bigint;
   readonly accountsTotalBalance: bigint;

@@ -107,11 +107,10 @@ const deployOrJoin = async (providers: AtaulfoProviders, rli: Interface, logger:
     const choice = await rli.question(DEPLOY_OR_JOIN_QUESTION);
     switch (choice) {
       case '1':
-        const nftName = await rli.question('What is the NFT name for the assets? ');
-        const nftSymbol = await rli.question('What is the NFT symbol for the assets? ');
+        const assetsUri = await rli.question('What is the base URI for the assets URI? ');
         const operationsFee = await rli.question('What is the operations fee to charge by the contract? ');
         const accountPassword = await askForPassword(rli);
-        api = await AtaulfoAPI.deploy(providers, nftName, nftSymbol, accountPassword, BigInt(operationsFee.trim()), logger);
+        api = await AtaulfoAPI.deploy(providers, assetsUri, accountPassword, BigInt(operationsFee.trim()), logger);
         logger.info(`Deployed contract at address: ${api.deployedContractAddress}`);
         return api;
       case '2':
@@ -158,7 +157,7 @@ const displayLedgerState = async (
           assetOwner = toHex(offer.assetOwner.right.bytes);
         }
 
-        logger.info(`Offer #${index}: {\n\tid: ${toHex(id)}\n\tassetOwner: ${assetOwner}\n\tassetId: ${offer.assetId}\n\tprice: ${offer.price}\n\tmaetadata: ${offer.meta}\n}`);
+        logger.info(`Offer #${index}: {\n\tid: ${toHex(id)}\n\tholdingId: ${toHex(offer.holdingId)}\n\tassetOwner: ${assetOwner}\n\tassetId: ${offer.assetId}\n\tprice: ${offer.price}\n\tmaetadata: ${offer.meta}\n}`);
       }
     }
 
@@ -209,6 +208,11 @@ const displayDerivedState = (ledgerDerivedState: AtaulfoDerivedState | undefined
       logger.info(`- My offer?: ${isMine}, Id: ${id}, asset: ${offer.assetId}, price: ${offer.price}`);
     }
     logger.info(`My offers published:${ledgerDerivedState.offersPublished}`);
+
+    logger.info(`Asset holdings:`);
+    for (const [id, [holdingId, balance]] of ledgerDerivedState.myAssetHoldings) {
+      logger.info(`- AssetId: ${id}, holdingId: ${holdingId}, balance: ${balance}`);
+    }
   }
 };
 
@@ -251,11 +255,16 @@ const mainLoop = async (wallet: Wallet, providers: AtaulfoProviders, rli: Interf
       switch (choice) {
         case '1': {
           const assetId = await rli.question(`What asset Id do you want to mint? `);
-          await ataulfoApi.mint(BigInt(assetId.trim()));
+          const shares = await rli.question(`What amonut of shares to mint for this asset class? `);
+          const holdingId = await ataulfoApi.mint(BigInt(assetId.trim()), BigInt(shares.trim()));
+          logger.info(`Holding Id: ${holdingId}`);
           break;
         }
         case '2': {
           const assetId = await rli.question(`What asset Id do you want to offer? `);
+          const holdingId = await rli.question(`Holding ID you want to use for the offer? `);
+          const sharesOffered = await rli.question(`What amount of shares of this asset class do you want to offer? `);
+          const min = await rli.question(`Minimum amount of shares required to fulfill this offer? `);
           const price = await rli.question(`What price do you want to offer the asset at? `);
           const location = await rli.question(`Location of the asset? `);
           const imageUrl = await rli.question(`What image URL do you want to associate with the offer? `);
@@ -265,7 +274,7 @@ const mainLoop = async (wallet: Wallet, providers: AtaulfoProviders, rli: Interf
             imageUrl: imageUrl,
             desc: desc
           };
-          const offerId = await ataulfoApi.createOffer(BigInt(assetId.trim()), BigInt(price.trim()), JSON.stringify(meta));
+          const offerId = await ataulfoApi.createOffer(BigInt(assetId.trim()), holdingId, BigInt(sharesOffered.trim()), BigInt(min.trim()), BigInt(price.trim()), JSON.stringify(meta));
           logger.info(`Offer created with Id: ${offerId}`);
           break;
         }
@@ -290,7 +299,8 @@ const mainLoop = async (wallet: Wallet, providers: AtaulfoProviders, rli: Interf
           break;
         case '7':
           const id = await rli.question(`Which offer do you want to fulfill? `);
-          const fulfilledOffer = await ataulfoApi.fulfillOffer(id);
+          const shares = await rli.question(`How many shares do you want to buy form this offer? `);
+          const fulfilledOffer = await ataulfoApi.fulfillOffer(id, BigInt(shares.trim()));
           logger.info(`Offer fulfilled: ${id}`);
           break;
         case '8':

@@ -21,9 +21,13 @@
 
 import contractModule, { Offer } from '../../contract/src/managed/ataulfo/contract/index.cjs';
 const { Contract, ledger, pureCircuits } = contractModule;
-// import { Contract, ledger, pureCircuits, Offer } from '../../contract/src/index';
 
-import { type ContractAddress, convert_bigint_to_Uint8Array } from '@midnight-ntwrk/compact-runtime';
+import {
+  type ContractAddress, encodeContractAddress,
+  dummyContractAddress,
+  encodeCoinPublicKey,
+} from '@midnight-ntwrk/compact-runtime';
+import { MidnightBech32m } from '@midnight-ntwrk/wallet-sdk-address-format';
 import { type Logger } from 'pino';
 import {
   type AtaulfoDerivedState,
@@ -48,14 +52,14 @@ export interface DeployedAtaulfoAPI {
   readonly deployedContractAddress: ContractAddress;
   readonly state$: Observable<AtaulfoDerivedState>;
 
-  mint: (assetId: bigint) => Promise<void>;
+  mint: (assetId: bigint, shares: bigint) => Promise<string>;
   withdrawCollectedFees: () => Promise<bigint>;
-  createOffer: (assetId: bigint, price: bigint, meta: string) => Promise<string>;
+  createOffer: (assetId: bigint, holdingId: string, shares: bigint, min: bigint, price: bigint, meta: string) => Promise<string>;
   cancelOffer: (offerId: string) => Promise<Offer>;
   depositFunds: (amount: bigint) => Promise<[bigint, bigint]>;
   withdrawFunds: (amount: bigint) => Promise<bigint>;
   balance: () => Promise<bigint>;
-  fulfillOffer: (offerId: string) => Promise<Offer>;
+  fulfillOffer: (offerId: string, shares: bigint) => Promise<Offer>;
 }
 
 /**
@@ -74,7 +78,6 @@ export interface DeployedAtaulfoAPI {
  * the deployed Ataulfo contracts, and allows for a unique secret key to be generated for each Ataulfo
  * instance that the user interacts with.
  */
-// TODO: Update AtaulfoAPI to use contract level private state storage.
 export class AtaulfoAPI implements DeployedAtaulfoAPI {
   /** @internal */
   private constructor(
@@ -112,29 +115,54 @@ export class AtaulfoAPI implements DeployedAtaulfoAPI {
         let myOffersCount = 0n;
         for (const [id, offer] of ledgerState.offers) {
           const offerId = toHex(id);
-          const isMine = offerId == toHex(pureCircuits.genOfferId(privateState.secretKey, offer.assetId, offer.price));
+          const isMine = offerId == toHex(pureCircuits.genOfferId(privateState.secretKey, offer.holdingId, offer.price));
           if (isMine) {
             myOffersCount += 1n;
           }
           offers.set(offerId, [offer, isMine]);
         }
 
+        const pk = providers.walletProvider.coinPublicKey;
+        const hexPk = MidnightBech32m.parse(pk).data.toString('hex');
+        const zswap_pk = {
+          is_left: true,
+          left: { bytes: encodeCoinPublicKey(hexPk) },
+          right: { bytes: encodeContractAddress(dummyContractAddress()) }
+        };
+        const hiddenOwner = pureCircuits.genHiddenOwner(zswap_pk);
+
         let accounts = new Map<string, bigint>();
         let myBalance = 0n;
+        const hiddenOwnerHex = toHex(hiddenOwner);
         for (const [key, balance] of ledgerState.accounts) {
           const balanceOwner = toHex(key);
-          if (balanceOwner == toHex(pureCircuits.genHiddenOwner(privateState.secretKey))) {
+          if (balanceOwner == hiddenOwnerHex) {
             myBalance = balance;
           }
           accounts.set(balanceOwner, balance);
         }
 
+        let myAssetHoldings = new Map<bigint, [string, bigint]>();
+        // FIXME: iterator through the list of asset IDs instead of hard-coded [10, 11, 12]
+        for (const i of [10, 11, 12]) {
+          const assetId = BigInt(i);
+          if (ledgerState.Assets_assetHoldings.member(assetId)) {
+            for (const [holdingId, balance] of ledgerState.Assets_assetHoldings.lookup(assetId)) {
+              const id = toHex(holdingId);
+              if (id == toHex(pureCircuits.Assets_genHoldingId(assetId, hiddenOwner))) {
+                myAssetHoldings.set(assetId, [id, balance]);
+              }
+            }
+          }
+        }
+
         const contractOwner = toHex(ledgerState.contractOwner);
-        const isContractOwner = contractOwner == toHex(pureCircuits.genHiddenOwner(privateState.secretKey));
+        const isContractOwner = contractOwner == hiddenOwnerHex;
 
         return {
           offers: offers,
           accounts: accounts,
+          myAssetHoldings: myAssetHoldings,
           opsFee: ledgerState.opsFee,
           treasuryBalance: ledgerState.treasury.value,
           accountsTotalBalance: ledgerState.accountsTotalBalance,
@@ -165,10 +193,10 @@ export class AtaulfoAPI implements DeployedAtaulfoAPI {
    * @remarks
    * This method can fail during local circuit execution if the Ataulfo is currently occupied.
    */
-  async createOffer(assetId: bigint, price: bigint, meta: string): Promise<string> {
+  async createOffer(assetId: bigint, holdingId: string, shares: bigint, min: bigint, price: bigint, meta: string): Promise<string> {
     this.logger?.info(`creating offer for asset Id ${assetId} at a price of ${price}, with metadata: ${meta}`);
 
-    const txData = await this.deployedContract.callTx.createOffer(assetId, price, meta);
+    const txData = await this.deployedContract.callTx.createOffer(assetId, fromHex(holdingId.trim()), shares, min, price, meta);
 
     this.logger?.trace({
       transactionAdded: {
@@ -197,10 +225,10 @@ export class AtaulfoAPI implements DeployedAtaulfoAPI {
     return txData.private.result;
   }
 
-  async mint(assetId: bigint): Promise<void> {
+  async mint(assetId: bigint, shares: bigint): Promise<string> {
     this.logger?.info(`minting new token with Id ${assetId}`);
 
-    const txData = await this.deployedContract.callTx.mint(assetId);
+    const txData = await this.deployedContract.callTx.mint(assetId, shares);
 
     this.logger?.trace({
       transactionAdded: {
@@ -209,6 +237,8 @@ export class AtaulfoAPI implements DeployedAtaulfoAPI {
         blockHeight: txData.public.blockHeight,
       },
     });
+
+    return toHex(txData.private.result);
   }
 
   async withdrawCollectedFees(): Promise<bigint> {
@@ -274,10 +304,10 @@ export class AtaulfoAPI implements DeployedAtaulfoAPI {
     return txData.private.result;
   }
 
-  async fulfillOffer(offerId: string): Promise<Offer> {
+  async fulfillOffer(offerId: string, shares: bigint): Promise<Offer> {
     this.logger?.info(`fulfilling offer with Id ${offerId}`);
     const idBytes = fromHex(offerId.trim());
-    const txData = await this.deployedContract.callTx.fulfillOffer(idBytes);
+    const txData = await this.deployedContract.callTx.fulfillOffer(idBytes, shares);
 
     this.logger?.trace({
       transactionAdded: {
@@ -298,14 +328,14 @@ export class AtaulfoAPI implements DeployedAtaulfoAPI {
    * @returns A `Promise` that resolves with a {@link AtaulfoAPI} instance that manages the newly deployed
    * {@link DeployedAtaulfoContract}; or rejects with a deployment error.
    */
-  static async deploy(providers: AtaulfoProviders, nftName: string, nftSymbol: string, localSecretKey: Uint8Array, operationsFee: bigint, logger?: Logger): Promise<AtaulfoAPI> {
+  static async deploy(providers: AtaulfoProviders, uri: string, localSecretKey: Uint8Array, operationsFee: bigint, logger?: Logger): Promise<AtaulfoAPI> {
     logger?.info('deployContract');
 
     const deployedAtaulfoContract = await deployContract<typeof ataulfoContractInstance>(providers, {
       privateStateId: ataulfoPrivateStateKey,
       contract: ataulfoContractInstance,
       initialPrivateState: await AtaulfoAPI.getPrivateState(providers, localSecretKey),
-      args: [nftName, nftSymbol, operationsFee]
+      args: [uri, operationsFee]
     });
 
     logger?.trace({
