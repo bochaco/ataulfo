@@ -5,7 +5,7 @@ import CompactStandardLibrary;
 import Assets prefix Assets_;
 
 // Asset holders and their corresponding balances.
-//export { Assets_assetHoldings };
+export { Assets_assetHoldings, Assets_genHoldingId };
 
 // Contract's own treasury of native tokens.
 export ledger treasury: QualifiedCoinInfo;
@@ -494,7 +494,7 @@ export circuit genOfferId(publisher: Bytes<32>, holdingId: Bytes<32>, price: Uin
          Bytes<32>;
 }
 
-// Generate an owner ID based on the owner's secret key.
+// Generate an owner ID based on the owner's PK.
 export circuit genHiddenOwner(pk: Either<ZswapCoinPublicKey, ContractAddress>): Bytes<32> {
   return Assets_genHiddenOwner(pk);
 }
