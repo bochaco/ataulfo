@@ -27,7 +27,7 @@ import { ButtonAndDialog } from './TextPromptDialog';
  */
 export interface EmptyCardContentProps {
   /** A callback that will be called to create a new Ataulfo. */
-  onCreateAtaulfoCallback: (assetName: string, assetSymbol: string, opsFee: bigint, accountPassword: Uint8Array) => void;
+  onCreateAtaulfoCallback: (assetUri: string, opsFee: bigint, accountPassword: Uint8Array) => void;
   /** A callback that will be called to join an existing Ataulfo. */
   onJoinAtaulfoCallback: (contractAddress: ContractAddress, accountPassword: Uint8Array) => void;
 }
@@ -59,15 +59,14 @@ export const EmptyCardContent: React.FC<Readonly<EmptyCardContentProps>> = ({
       </CardContent>
       <CardActions sx={{ justifyContent: 'center' }}>
         <ButtonAndDialog
-          prompts={[['Enter the NFT name for the assets'],
-          ['Enter the NFT symbol for the assets'],
+          prompts={[['Enter the URI for the assets NFT'],
           ['Enter the operations fee to charge by the contract'],
           ['Account password (please do not forget it)', true]]}
           btnCaption="Create"
           tooltip="Create a new marketplace"
           btnIcon={<CreateBoardIcon />}
           onSubmit={(texts) => {
-            onCreateAtaulfoCallback(texts[0], texts[1], BigInt(texts[2].trim()), Uint8Array.from(texts[3]));
+            onCreateAtaulfoCallback(texts[0], BigInt(texts[1].trim()), Uint8Array.from(texts[2]));
           }}
         />
         <ButtonAndDialog
