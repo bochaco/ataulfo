@@ -11,6 +11,8 @@ module Assets {
   export ledger approvals: Map<Bytes<32>, Set<Bytes<32>>>;
 
   // Returns the number of shares owned for a given asset and holding ID.
+  // Returns 0 if the holding ID does not exist for the asset.
+  // Asserts if the asset ID is invalid.
   export circuit balance(assetId: Uint<128>, holdingId: Bytes<32>): Uint<128> {
     assert(assetHoldings.member(disclose(assetId)), "Invalid asset ID");
     if (assetHoldings.lookup(disclose(assetId)).member(disclose(holdingId))) {
@@ -20,7 +22,9 @@ module Assets {
     return 0;
   }
 
-  // Checks if the caller is the owner of the holding or an approved operator.
+  // Checks if the specified party (from) is the owner of the holding or an approved operator.
+  // Returns true if the party owns the holding or is approved to manage it.
+  // Asserts if the asset holding ID is invalid.
   export circuit isOwnerOrApproved(
                    from: Either<ZswapCoinPublicKey, ContractAddress>,
                    assetId: Uint<128>,
@@ -37,12 +41,17 @@ module Assets {
   }
 
   // Checks if a holding ID exists for a given asset ID.
+  // Returns true if the holding exists, false otherwise.
+  // Asserts if the asset ID is invalid.
   export circuit holdingExists(assetId: Uint<128>, holdingId: Bytes<32>): Boolean {
     assert(assetHoldings.member(disclose(assetId)), "Invalid asset ID");
     return assetHoldings.lookup(disclose(assetId)).member(disclose(holdingId));
   }
 
   // Checks if the given party is approved to manage the specified holding ID.
+  // Returns true only if the party is an approved operator (not the owner).
+  // Returns false if the party has no approvals or is not approved for this holding.
+  // Asserts if the asset ID or holding ID is invalid.
   export circuit isApproved(
                    from: Either<ZswapCoinPublicKey, ContractAddress>,
                    assetId: Uint<128>,
@@ -56,7 +65,10 @@ module Assets {
   }
 
   // Approves or revokes an operator for a specific holding ID.
-  // Only the owner or an approved operator can call this.
+  // If approved is true, adds the holding to the operator's approved set.
+  // If approved is false, removes the holding from the operator's approved set.
+  // Creates the operator's approval entry if it doesn't exist.
+  // Asserts if the caller is not the owner or an approved operator.
   export circuit setApproval(
                    assetId: Uint<128>,
                    holdingId: Bytes<32>,
@@ -79,8 +91,11 @@ module Assets {
     }
   }
 
-  // Transfers shares of an asset from the caller to another account.
-  // Only the owner or an approved operator can call this.
+  // Transfers shares of an asset from the caller's holding to another account.
+  // Generates the caller's holding ID from their public key and the asset ID.
+  // Removes any approvals for the caller if their balance reaches zero after transfer.
+  // Asserts if the caller is not the owner or an approved operator.
+  // Asserts if the caller has insufficient shares for the transfer.
   export circuit transfer(to: Either<ZswapCoinPublicKey, ContractAddress>,
                           assetId: Uint<128>,
                           shares: Uint<128>
@@ -95,7 +110,10 @@ module Assets {
   }
 
   // Internal: Transfers shares from a specific holding ID to another owner.
-  // Removes shares from the source and adds them to the destination.
+  // Removes shares from the source holding and adds them to the destination's holding.
+  // Automatically removes the caller's approval for this holding if the source balance reaches zero.
+  // Deletes the source holding if all shares are removed.
+  // Creates the destination holding if it doesn't exist.
   export circuit _transferFrom(
                    holdingId: Bytes<32>,
                    to: Either<ZswapCoinPublicKey, ContractAddress>,
@@ -115,13 +133,17 @@ module Assets {
     addHoldingTo(toHiddenOwner, assetId, shares);
   }
 
-  // Mints new shares of an asset to the specified owner.
-  // Returns the holding ID for the new ownership.
+  // Mints new shares of an asset to the specified owner (hidden owner ID).
+  // Creates the asset entry in the ledger if it doesn't exist.
+  // Adds shares to an existing holding or creates a new holding.
+  // Returns the holding ID for the ownership.
   export circuit mint(owner: Bytes<32>, assetId: Uint<128>, shares: Uint<128>): Bytes<32> {
     return addHoldingTo(owner, assetId, shares);
   }
 
   // Generates a hidden owner ID from a public key or contract address.
+  // Uses persistent hashing with the prefix "hidden_owner:" and the owner's bytes.
+  // Handles both ZswapCoinPublicKey (left) and ContractAddress (right) types.
   export circuit genHiddenOwner(owner: Either<ZswapCoinPublicKey, ContractAddress>): Bytes<32> {
     if (owner.is_left) {
        return disclose(persistentHash<Vector<2, Bytes<32>>>(
@@ -133,14 +155,19 @@ module Assets {
     }
   }
 
-  // Generates a holding ID from asset ID and owner ID.
+  // Generates a unique holding ID from asset ID and owner ID (hidden owner).
+  // Uses persistent hashing with the prefix "holding_id:", asset ID, and owner.
+  // The holding ID uniquely identifies an owner's position in a specific asset.
   export circuit genHoldingId(assetId: Uint<128>, owner: Bytes<32>): Bytes<32> {
     return persistentHash<Vector<3, Bytes<32>>>(
              [pad(32, "holding_id:"), assetId as Field as Bytes<32>, owner]);
   }
 
   // Adds shares to an owner's holding for a given asset.
-  // Creates the holding if it does not exist.
+  // Creates the asset entry in the ledger if it doesn't exist.
+  // Creates the holding if it does not exist, or adds to existing shares if it does.
+  // Asserts if the owner is empty (default Bytes<32>).
+  // Returns the holding ID.
   circuit addHoldingTo(owner: Bytes<32>, assetId: Uint<128>, shares: Uint<128>): Bytes<32> {
     assert(owner != default<Bytes<32>>, "Recipient cannot be empty.");
     const holdingId = genHoldingId(assetId, owner);
@@ -165,7 +192,10 @@ module Assets {
   }
 
   // Removes shares from an owner's holding for a given asset.
-  // Deletes the holding if all shares are removed.
+  // Deletes the holding entry entirely if all shares are removed (balance reaches zero).
+  // Otherwise, decrements the balance and keeps the holding.
+  // Returns the new balance (0 if deleted, otherwise the remaining balance).
+  // Asserts if the holding doesn't exist or if there are insufficient shares.
   circuit removeHoldingFrom(holdingId: Bytes<32>, assetId: Uint<128>, shares: Uint<128>): Uint<128> {
     assert(holdingExists(assetId, holdingId), "Invalid owner.");
     const balance = assetHoldings.lookup(assetId).lookup(holdingId);

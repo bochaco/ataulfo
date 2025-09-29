@@ -51,10 +51,11 @@ export ledger offers: Map<Bytes<32>, Offer>;
 witness localSecretKey(): Bytes<32>;
 
 /**
-  * @description Initializes the contract by setting the base URI for all assets.
+  * @description Initializes the contract by setting the operations fee and contract owner.
+  * Note: The uri parameter is not used in the implementation.
   *
-  * @param {Opaque<"string">} uri - The base URI for all assets URIs.
-  * @param {Uint<128>} fee - The fee to charge for each operation requested by the users to be collected by the cowner.
+  * @param {Opaque<"string">} uri - Unused parameter (originally intended for asset base URI).
+  * @param {Uint<128>} fee - The fee charged for deposit, withdrawal, and fulfillment operations.
   */
 constructor(uri: Opaque<"string">, fee: Uint<128>) {
   opsFee = disclose(fee);
@@ -63,16 +64,16 @@ constructor(uri: Opaque<"string">, fee: Uint<128>) {
 }
 
 /**
-  * @description Mint a new asset with given Id and owned by the caller.
+  * @description Mint new shares of an asset owned by the contract owner.
+  * Assets are always minted to the contract owner, not the caller.
   *
   * Requirements:
   *
-  * - The contract is initialized.
-  * - The caller is the contract owner.
+  * - The caller must be the contract owner.
   *
-  * @param {Uint<128>} id - The unique identifier for the asset.
-  * @param {Uint<128>} value - The quantity of assets of this same type that are minted.
-  * @return {Bytes<32>} - Holding ID.
+  * @param {Uint<128>} assetId - The unique identifier for the asset.
+  * @param {Uint<128>} shares - The quantity of asset shares to mint.
+  * @return {Bytes<32>} - The holding ID for the minted shares.
   */
 export circuit mint(assetId: Uint<128>, shares: Uint<128>): Bytes<32> {
   assert(contractOwner == genHiddenOwner(getTxSender()), "Only the contract owner can mint new assets");
@@ -80,20 +81,28 @@ export circuit mint(assetId: Uint<128>, shares: Uint<128>): Bytes<32> {
 }
 
 /**
- * @description Returns the balance (amount of shares) the caller owns for assets of type `assetId`.
+ * @description Returns the balance (amount of shares) for a specific holding ID of an asset.
+ * This is a generic query that can check any holding, not just the caller's.
  *
  * Requirements:
  *
- * - The contract is initialized.
- * - The asset exists.
+ * - The asset must exist.
  *
  * @param {Uint<128>} assetId - The target asset of the balance query.
- * @return {Uint<128>} balance - Amount of shares the caller owns.
+ * @param {Bytes<32>} holdingId - The holding ID to query.
+ * @return {Uint<128>} balance - Amount of shares in the holding (0 if holding doesn't exist).
  */
 export circuit assetBalance(assetId: Uint<128>, holdingId: Bytes<32>): Uint<128> {
   return Assets_balance(assetId, holdingId);
 }
 
+/**
+ * @description Returns the balance (amount of shares) the caller owns for assets of type `assetId`.
+ * Generates the caller's holding ID automatically from their transaction sender identity.
+ *
+ * @param {Uint<128>} assetId - The target asset of the balance query.
+ * @return {Uint<128>} balance - Amount of shares the caller owns (0 if no holding exists).
+ */
 export circuit myAssetBalance(assetId: Uint<128>): Uint<128> {
   const hiddenOwner = genHiddenOwner(getTxSender());
   const holdingId = Assets_genHoldingId(assetId, hiddenOwner);
@@ -101,14 +110,17 @@ export circuit myAssetBalance(assetId: Uint<128>): Uint<128> {
 }
 
 /**
- * @description Approve a party to create offers with the `assetId`.
+ * @description Approve or revoke a party's ability to manage a specific holding of an asset.
+ * The approved party can transfer shares and create offers for the holding.
  *
  * Requirements:
  *
- * - The contract is initialized.
+ * - The caller must be the owner or an already-approved operator of the holding.
  *
- * @param {Uint<128>} assetId - The target asset to approve.
- * @param {Either<ZswapCoinPublicKey, ContractAddress>} target - Who is given transfer approval.
+ * @param {Uint<128>} assetId - The target asset.
+ * @param {Bytes<32>} holdingId - The holding ID to approve/revoke.
+ * @param {Either<ZswapCoinPublicKey, ContractAddress>} target - The party to approve/revoke.
+ * @param {Boolean} approved - True to approve, false to revoke.
  * @return {[]} - Empty tuple.
  */
 export circuit setApproval(
@@ -121,20 +133,32 @@ export circuit setApproval(
 }
 
 /**
- * @description Returns whether the caller is caller is approved on the `assetId`.
+ * @description Returns whether the caller is the owner or an approved operator for the holding.
  *
  * Requirements:
  *
- * - The contract is initialized.
+ * - The asset and holding must exist.
  *
- * @param {Uint<128>} assetId - The target asset to check approval.
- * @param {Either<ZswapCoinPublicKey, ContractAddress>} owner - Owner of the asset.
- * @return {Boolean} - Whether the caller is approved.
+ * @param {Uint<128>} assetId - The target asset to check.
+ * @param {Bytes<32>} holdingId - The holding ID to check approval for.
+ * @return {Boolean} - True if the caller is the owner or approved operator, false otherwise.
  */
 export circuit isApproved(assetId: Uint<128>, holdingId: Bytes<32>): Boolean {
   return Assets_isOwnerOrApproved(getTxSender(), assetId, holdingId);
 }
 
+/**
+ * @description Returns whether a specific operator is the owner or an approved operator for the holding.
+ *
+ * Requirements:
+ *
+ * - The asset and holding must exist.
+ *
+ * @param {Either<ZswapCoinPublicKey, ContractAddress>} operator - The operator to check.
+ * @param {Uint<128>} assetId - The target asset to check.
+ * @param {Bytes<32>} holdingId - The holding ID to check approval for.
+ * @return {Boolean} - True if the operator is the owner or approved, false otherwise.
+ */
 export circuit isApprovedOperator(
                  operator: Either<ZswapCoinPublicKey, ContractAddress>,
                  assetId: Uint<128>,
@@ -157,20 +181,22 @@ export circuit isApprovedOperator(
  * @return {[]} - Empty tuple.
  */
 export circuit setApprovalForAll(operator: ZswapCoinPublicKey, approved: Boolean): [] {
+  // TODO!!!!!
   //Assets_setApprovalForAll(operator, approved);
   return [];
 }
 
 /**
-  * @description Withdraw collected fees.
+  * @description Withdraw collected operation fees to the contract owner.
+  * Collected fees are calculated as the treasury balance minus the total of all user deposits.
+  * Only withdraws the excess above what's needed to back user deposits.
   *
   * Requirements:
   *
-  * - The contract is initialized.
-  * - The caller is the contract owner.
-  * - There are collected fees to withdraw while backing accounts deposits.
+  * - The caller must be the contract owner.
+  * - Collected fees must be greater than zero (treasury > accountsTotalBalance).
   *
-  * @return {Uint<128>} - Balance withdrawn.
+  * @return {Uint<128>} - Amount of collected fees withdrawn.
   */
 export circuit withdrawCollectedFees(): Uint<128> {
   assert(contractOwner == genHiddenOwner(getTxSender()), "Only the contract owner can withdraw collected fees");
@@ -193,23 +219,25 @@ export circuit withdrawCollectedFees(): Uint<128> {
 }
 
 /**
-  * @description Publish a new offer for the specified `assetId` and given `price`.
+  * @description Create a sell offer for asset shares at a specified price.
+  * Automatically approves the contract to transfer the asset when the offer is fulfilled.
+  * The offer ID is deterministically generated from the local secret key, holding ID, and price.
   *
   * Requirements:
   *
-  * - The contract is initialized.
-  * - The price is greater than zero.
-  * - The caller is the owner or operator of the asset to be published.
-  * - The owner or operator owns at least the number of offered shares.
-  * - The number of offered shares is greater or equal to the minimum set in the offer.
-  * - The minimum of shares to fullfil the offer s greater than zero.
+  * - The price must be greater than zero.
+  * - The minimum shares must be greater than zero.
+  * - The offered shares must be greater than or equal to the minimum shares.
+  * - The caller must own at least the number of offered shares.
+  * - The caller must be the owner or an approved operator of the holding.
   *
-  * @param {Uint<128>} assetId - Id of the asset the offer is for
-  * @param {Uint<128>} shares - Number of shares on sale in this offer
-  * @param {Uint<128>} min - Minimum amount of shares on sale in this offer,
-  * @param {Uint<128>} price - Price of the asset in this offer
-  * @param {Opaque<'string'>} meta - Metadata for the asset in this offer
-  * @return {Bytes<32>} - The ID of the created offer.
+  * @param {Uint<128>} assetId - The asset ID for the offer.
+  * @param {Bytes<32>} holdingId - The holding ID containing the shares.
+  * @param {Uint<128>} shares - Number of shares on sale in this offer.
+  * @param {Uint<128>} minShares - Minimum amount of shares required to fulfill the offer.
+  * @param {Uint<128>} price - Price in native tokens per share (total cost = price * shares).
+  * @param {Opaque<'string'>} meta - Optional metadata for the offer.
+  * @return {Bytes<32>} - The unique ID of the created offer.
   */
 export circuit createOffer(
                  assetId: Uint<128>,
@@ -248,16 +276,17 @@ export circuit createOffer(
 }
 
 /**
-  * @description Cancel the offer with the specified `offerId`.
+  * @description Cancel an existing offer and revoke the contract's approval to transfer the asset.
+  * Removes the offer from the offers ledger.
   *
   * Requirements:
   *
-  * - The contract is initialized.
-  * - The offer exists.
-  * - The caller is the publisher or the current owner of the asset.
+  * - The offer must exist.
+  * - The caller must be either the original publisher (verified by matching the offer ID generation)
+  *   or the current owner/approved operator of the asset holding.
   *
-  * @param {Bytes<32>} offerId - Id of the offer to cancel
-  * @return {Offer} - The offer just cancelled.
+  * @param {Bytes<32>} offerId - The ID of the offer to cancel.
+  * @return {Offer} - The cancelled offer data.
   */
 export circuit cancelOffer(offerId: Bytes<32>): Offer {
   assert(offers.member(disclose(offerId)), "Offer does not exist");
@@ -277,16 +306,17 @@ export circuit cancelOffer(offerId: Bytes<32>): Offer {
 }
 
 /**
-  * @description Deposit funds into the contract which can be used to make the payment when fulfilling an offer.
+  * @description Deposit native tokens into the contract for the caller's account.
+  * Deducts the operation fee from the deposit and credits the net amount to the caller.
+  * Funds can be used to fulfill offers or withdrawn later.
   *
   * Requirements:
   *
-  * - The contract is initialized.
-  * - The funds are in native token.
-  * - The amount is greater than the contract defined operations fee.
+  * - The coins must be native tokens.
+  * - The deposit amount must be greater than the operations fee.
   *
-  * @param {CoinInfo} coinInfo - Information about the funds being deposited
-  * @return {[Uint<128>, Uint<128>]} - Net amount deposited, i.e. after fees, and updated balance.
+  * @param {CoinInfo} coinInfo - Information about the coins being deposited.
+  * @return {[Uint<128>, Uint<128>]} - Net amount deposited (after fee) and the caller's updated total balance.
   */
 export circuit depositFunds(coinInfo: CoinInfo): [Uint<128>, Uint<128>] {
   assert(coinInfo.color == nativeToken(), "Only native tokens can be deposited");
@@ -319,16 +349,18 @@ export circuit depositFunds(coinInfo: CoinInfo): [Uint<128>, Uint<128>] {
 }
 
 /**
-  * @description Withdraw deposited funds from the contract.
+  * @description Withdraw deposited native tokens from the contract to the caller.
+  * Charges the operation fee in addition to the withdrawal amount.
+  * The total deducted is (amount + opsFee) from the caller's balance.
   *
   * Requirements:
   *
-  * - The contract is initialized.
-  * - The amount is greater than the contract defined operations fee.
-  * - The caller has deposited balance and the amount is less than or equal to the deposited balance.
+  * - The withdrawal amount must be greater than the operations fee.
+  * - The caller must have a deposited balance.
+  * - The caller's balance must be sufficient to cover both the amount and the fee (amount + opsFee).
   *
-  * @return {Uint<128>} - Amount to withdraw.
-  * @return {Uint<128>} - Updated balance.
+  * @param {Uint<128>} amount - The amount to withdraw (excluding the fee).
+  * @return {Uint<128>} - The caller's remaining balance after withdrawal and fee.
   */
 export circuit withdrawFunds(amount: Uint<128>): Uint<128> {
   assert(amount > opsFee, "Withdraw amount must be greater than the operations fee");
@@ -362,13 +394,10 @@ export circuit withdrawFunds(amount: Uint<128>): Uint<128> {
 }
 
 /**
-  * @description Query balance from the contract.
+  * @description Query the caller's deposited balance in the contract.
+  * Returns 0 if the caller has no deposited funds.
   *
-  * Requirements:
-  *
-  * - The contract is initialized.
-  *
-  * @return {Uint<128>} - Current balance.
+  * @return {Uint<128>} - The caller's current deposited balance.
   */
 export circuit balance(): Uint<128> {
   const balanceOwner = genHiddenOwner(getTxSender());
@@ -380,31 +409,34 @@ export circuit balance(): Uint<128> {
 }
 
 /**
-  * @description Return the current treasury balance.
+  * @description Returns the total native token balance held in the contract's treasury.
+  * This includes both user deposits and collected operation fees.
   *
-  * Requirements:
-  *
-  * - The contract is initialized.
-  *
-  * @return {Uint<128>} - Current treasury balance.
+  * @return {Uint<128>} - Current treasury balance in native tokens.
   */
 export circuit treasuryBalance(): Uint<128> {
   return treasury.value;
 }
 
 /**
-  * @description Fulfill an offer by transferring the asset to the caller and automatically making the payment to the publisher.
+  * @description Fulfill an offer by purchasing the specified amount of shares.
+  * Transfers asset shares to the caller and sends payment to the asset owner.
+  * Charges the operation fee in addition to the purchase price.
+  * If remaining shares fall below minShares, the offer is removed; otherwise it's updated with remaining shares.
   *
   * Requirements:
   *
-  * - The contract is initialized.
-  * - The offer exists.
-  * - The caller is not the publisher.
-  * - The caller has sufficient deposited balance to cover the price of the offer and operation fee.
+  * - The offer must exist.
+  * - The asset must still be approved for the contract to transfer.
+  * - The shares amount must not exceed available shares in the offer.
+  * - The shares amount must meet or exceed the offer's minimum shares requirement.
+  * - The caller cannot be the original publisher of the offer.
+  * - The caller must have a deposited balance.
+  * - The caller's balance must cover (price * shares) + opsFee.
   *
-  * @param {Bytes<32>} offerId - Id of the offer to fulfill.
-  * @param {Uint<128>} shares - Amount of asset shares to buy.
-  * @return {Offer} - The offer just fulfilled.
+  * @param {Bytes<32>} offerId - The ID of the offer to fulfill.
+  * @param {Uint<128>} shares - The amount of asset shares to purchase.
+  * @return {Offer} - The original offer data before fulfillment.
   */
 export circuit fulfillOffer(offerId: Bytes<32>, shares: Uint<128>): Offer {
   assert(offers.member(disclose(offerId)), "Offer does not exist");
@@ -485,8 +517,10 @@ circuit myAddr(): Either<ZswapCoinPublicKey, ContractAddress> {
   return right<ZswapCoinPublicKey, ContractAddress>(kernel.self());
 }
 
-// Generate a unique offer ID based on the publisher, asset ID, and price.
-// We include the publisher in the ID to support different operators offering the same asset.
+// Generate a unique offer ID based on the publisher (local secret key), holding ID, and price.
+// Uses persistent hashing with the prefix "offer_id:".
+// The publisher parameter is typically the local secret key, making offer IDs deterministic
+// but private to the offer creator, preventing unauthorized cancellations.
 export circuit genOfferId(publisher: Bytes<32>, holdingId: Bytes<32>, price: Uint<128>): Bytes<32> {
   return disclose(persistentHash<Vector<4, Bytes<32>>>(
                     [pad(32, "offer_id:"), publisher, holdingId, price as Field as Bytes<32>]))
@@ -494,7 +528,9 @@ export circuit genOfferId(publisher: Bytes<32>, holdingId: Bytes<32>, price: Uin
          Bytes<32>;
 }
 
-// Generate an owner ID based on the owner's PK.
+// Generate a hidden owner ID from a public key or contract address.
+// Delegates to Assets_genHiddenOwner which uses persistent hashing with "hidden_owner:" prefix.
+// This creates a privacy-preserving identifier for ownership tracking.
 export circuit genHiddenOwner(pk: Either<ZswapCoinPublicKey, ContractAddress>): Bytes<32> {
   return Assets_genHiddenOwner(pk);
 }
