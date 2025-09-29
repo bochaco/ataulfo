@@ -103,7 +103,7 @@ export const Ataulfo: React.FC<Readonly<AtaulfoProps>> = ({ ataulfoDeployment$ }
   const [ataulfoState, setAtaulfoState] = useState<AtaulfoDerivedState>();
   const [isWorking, setIsWorking] = useState(false);
 
-  const onCreateAtaulfo = useCallback((assetName: string, assetSymbol: string, opsFee: bigint, accountPassword: Uint8Array) => ataulfoApiProvider.create(assetName, assetSymbol, opsFee, accountPassword), [ataulfoApiProvider]);
+  const onCreateAtaulfo = useCallback((assetUri: string, opsFee: bigint, accountPassword: Uint8Array) => ataulfoApiProvider.create(assetUri, opsFee, accountPassword), [ataulfoApiProvider]);
   const onJoinAtaulfo = useCallback(
     (contractAddress: ContractAddress, accountPassword: Uint8Array) => ataulfoApiProvider.resolve(contractAddress, accountPassword),
     [ataulfoApiProvider],
@@ -111,11 +111,11 @@ export const Ataulfo: React.FC<Readonly<AtaulfoProps>> = ({ ataulfoDeployment$ }
 
   // Callbacks to handle the interactions with the Ataulfo circuits using the methods of 
   // the `DeployedAtaulfoAPI` instance that we received in the `deployedAtaulfoAPI` state.
-  const onMintAsset = useCallback(async (assetId: string) => {
+  const onMintAsset = useCallback(async (assetId: string, shares: string) => {
     try {
       if (deployedAtaulfoAPI) {
         setIsWorking(true);
-        await deployedAtaulfoAPI.mint(BigInt(assetId.trim()));
+        await deployedAtaulfoAPI.mint(BigInt(assetId.trim()), BigInt(shares.trim()));
       }
     } catch (error: unknown) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
@@ -163,11 +163,11 @@ export const Ataulfo: React.FC<Readonly<AtaulfoProps>> = ({ ataulfoDeployment$ }
     }
   }, [deployedAtaulfoAPI, setErrorMessage, setIsWorking]);
 
-  const onFulfillOffer = useCallback(async (offerId: string) => {
+  const onFulfillOffer = useCallback(async (offerId: string, shares: bigint) => {
     try {
       if (deployedAtaulfoAPI) {
         setIsWorking(true);
-        await deployedAtaulfoAPI.fulfillOffer(offerId);
+        await deployedAtaulfoAPI.fulfillOffer(offerId, shares);
       }
     } catch (error: unknown) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
@@ -176,11 +176,11 @@ export const Ataulfo: React.FC<Readonly<AtaulfoProps>> = ({ ataulfoDeployment$ }
     }
   }, [deployedAtaulfoAPI, setErrorMessage, setIsWorking]);
 
-  const onCreateOffer = useCallback(async (assetId: string, price: string, meta: string) => {
+  const onCreateOffer = useCallback(async (assetId: string, holdingId: string, shares: string, minShares: string, price: string, meta: string) => {
     try {
       if (deployedAtaulfoAPI) {
         setIsWorking(true);
-        await deployedAtaulfoAPI.createOffer(BigInt(assetId.trim()), BigInt(price.trim()), meta.trim());
+        await deployedAtaulfoAPI.createOffer(BigInt(assetId.trim()), holdingId, BigInt(shares.trim()), BigInt(minShares.trim()), BigInt(price.trim()), meta.trim());
       }
     } catch (error: unknown) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
@@ -324,11 +324,11 @@ export const Ataulfo: React.FC<Readonly<AtaulfoProps>> = ({ ataulfoDeployment$ }
                   spacing={2}
                 ><Box>
                     <ButtonAndDialog
-                      prompts={[['Enter ID for new asset (please remember it)']]}
+                      prompts={[['Enter ID for new asset (please remember it)'], ['Number of shares to mint']]}
                       btnCaption="Mint New Asset"
                       tooltip=''
                       btnIcon={<HardwareIcon />}
-                      onSubmit={(texts) => onMintAsset(texts[0])}
+                      onSubmit={(texts) => onMintAsset(texts[0], texts[1])}
                     />
                   </Box><Box>
                     <Button variant="contained" startIcon={<AttachMoneyIcon />}
@@ -388,7 +388,9 @@ export const Ataulfo: React.FC<Readonly<AtaulfoProps>> = ({ ataulfoDeployment$ }
                 </Box><Box>
                   <ButtonAndDialog
                     prompts={[['Enter ID of the asset'],
-                    ['Enter offered price'],
+                    ['Holding ID to put on offer'],
+                    ['Number of shares to offer'],
+                    ['Enter offered price per share'],
                     ['Enter the location of the asset'],
                     ['Enter a description of the offered asset'],
                     ['Enter image URL to display for the offer']]}
@@ -397,9 +399,12 @@ export const Ataulfo: React.FC<Readonly<AtaulfoProps>> = ({ ataulfoDeployment$ }
                     btnIcon={<LocalOffer />}
                     onSubmit={(texts) => {
                       const assetId = texts[0];
-                      const price = texts[1];
-                      const meta = JSON.stringify({ location: texts[2], desc: texts[3], imageUrl: texts[4] });
-                      onCreateOffer(assetId, price, meta);
+                      const holdingId = texts[1];
+                      const shares = texts[2];
+                      const minShares = shares;
+                      const price = texts[3];
+                      const meta = JSON.stringify({ location: texts[4], desc: texts[5], imageUrl: texts[6] });
+                      onCreateOffer(assetId, holdingId, shares, minShares, price, meta);
                     }}
                   />
                 </Box>
@@ -420,7 +425,7 @@ export const Ataulfo: React.FC<Readonly<AtaulfoProps>> = ({ ataulfoDeployment$ }
                     {Array.from(ataulfoState.offers)
                       .map(([offerId, [offer, isMine]]) => {
                         const meta = deserializeMetadataJson(offer.meta);
-                        return ({ id: offerId, isMine: isMine, assetId: offer.assetId, price: offer.price, location: meta.location, imageUrl: meta.imageUrl, desc: meta.desc });
+                        return ({ id: offerId, isMine: isMine, assetId: offer.assetId, shares: offer.shares, price: offer.price, location: meta.location, imageUrl: meta.imageUrl, desc: meta.desc });
                       })
                       .map((offer, index) => (
                         <Grid key={index} size={{ xs: 2, sm: 4, md: 4 }}>
@@ -466,7 +471,7 @@ export const Ataulfo: React.FC<Readonly<AtaulfoProps>> = ({ ataulfoDeployment$ }
                                   title="Buy asset"
                                   aria-label="buy"
                                   disabled={ataulfoState.balance == 0n}
-                                  onClick={() => onFulfillOffer(offer.id)}
+                                  onClick={() => onFulfillOffer(offer.id, offer.shares)}
                                 >
                                   <ShoppingCartIcon />
                                 </IconButton>

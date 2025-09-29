@@ -6,8 +6,6 @@
 
 Ataulfo is a decentralized application (dApp) for creating and managing a Real World Asset (RWA) marketplace on the [Midnight](https://midnight.network/) blockchain. It provides both a command-line interface (CLI) and a graphical user interface (GUI) for interacting with a deployed Ataulfo smart contract.
 
-An example Ataulfo marketplace has been deployed on Midnight Testnet network at the following address: `020079046f906f3ac5888ceb4b2790d82065101e7590b650787ad7116d4165e95a30`
-
 Users can interact with the marketplace using either a command-line interface (CLI) or a graphical user interface (GUI), as detailed in the subsequent instructions. This information is useful for developers or testers who want to connect to and experiment with the deployed marketplace without needing to set up their own instance.
 
 <img src="gui/public/admin_panel.png" width="400" />
@@ -35,7 +33,6 @@ Users can interact with the marketplace using either a command-line interface (C
 ## Caveats
 
 - The list of assets (NFTs) owned by a user is currently not displayed in the UI/CLI. To publish an asset on the marketplace, users need to know their asset/NFT ID. The asset IDs are chosen by the contract owner when minting them.
-- Currently, RWA/NFT assets offered in the marketplace are not transferred to the contract, as this is not yet supported by Midnight. Instead, the contract is approved to transfer the asset when an offer is made.
 
 ---
 

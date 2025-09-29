@@ -134,7 +134,7 @@ export interface DeployedAtaulfoAPIProvider {
    * @param accountPassword A password for the account.
    * @returns An observable Ataulfo deployment.
    */
-  readonly create: (assetName: string, assetSymbol: string, opsFee: bigint, accountPassword: Uint8Array) => Observable<AtaulfoDeployment>;
+  readonly create: (assetUri: string, opsFee: bigint, accountPassword: Uint8Array) => Observable<AtaulfoDeployment>;
 }
 
 /**
@@ -192,12 +192,12 @@ export class BrowserDeployedAtaulfoManager implements DeployedAtaulfoAPIProvider
   }
 
   /** @inheritdoc */
-  create(assetName: string, assetSymbol: string, opsFee: bigint, accountPassword: Uint8Array): Observable<AtaulfoDeployment> {
+  create(assetUri: string, opsFee: bigint, accountPassword: Uint8Array): Observable<AtaulfoDeployment> {
     let deployment = new BehaviorSubject<AtaulfoDeployment>({
       status: 'in-progress',
     });
 
-    void this.deployDeployment(deployment, assetName, assetSymbol, opsFee, accountPassword);
+    void this.deployDeployment(deployment, assetUri, opsFee, accountPassword);
 
     this.#ataulfoDeploymentsSubject.next(deployment);
 
@@ -215,11 +215,11 @@ export class BrowserDeployedAtaulfoManager implements DeployedAtaulfoAPIProvider
     return this.#initializedProviders ?? (this.#initializedProviders = initializeProviders(this.logger));
   }
 
-  private async deployDeployment(deployment: BehaviorSubject<AtaulfoDeployment>, nftName: string, nftSymbol: string, opsFee: bigint, accountPassword: Uint8Array): Promise<void> {
+  private async deployDeployment(deployment: BehaviorSubject<AtaulfoDeployment>, assetUri: string, opsFee: bigint, accountPassword: Uint8Array): Promise<void> {
     try {
       const providers = await this.getProviders();
 
-      const api = await AtaulfoAPI.deploy(providers, nftName, nftSymbol, accountPassword, opsFee, this.logger);
+      const api = await AtaulfoAPI.deploy(providers, assetUri, accountPassword, opsFee, this.logger);
 
       deployment.next({
         status: 'deployed',
